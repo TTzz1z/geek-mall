@@ -10,6 +10,9 @@ spring:
         enabled: false
   data:
     redis:
+      host: 127.0.0.1
+      port: 6379
+      timeout: 2s
       repositories:
         enabled: false
   flyway:
