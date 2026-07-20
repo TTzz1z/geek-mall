@@ -1,6 +1,19 @@
 import { existsSync, cpSync, rmSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
+function rmSafe(path) {
+  try {
+    rmSync(path, { recursive: true, force: true })
+  } catch (err) {
+    // Windows may lock dist/dev while HBuilder / antivirus holds handles.
+    if (err && (err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'ENOTEMPTY')) {
+      console.warn('skip remove (locked):', path, err.code)
+      return
+    }
+    throw err
+  }
+}
+
 const h5 = join(process.cwd(), 'dist', 'build', 'h5')
 if (!existsSync(h5)) {
   console.error('H5 build missing:', h5)
@@ -8,13 +21,13 @@ if (!existsSync(h5)) {
 }
 
 const staging = join(process.cwd(), '.h5-nginx-staging')
-rmSync(staging, { recursive: true, force: true })
+rmSafe(staging)
 cpSync(h5, staging, { recursive: true })
 
 const dist = join(process.cwd(), 'dist')
 for (const name of readdirSync(dist)) {
   if (name === 'build') continue
-  rmSync(join(dist, name), { recursive: true, force: true })
+  rmSafe(join(dist, name))
 }
 for (const name of readdirSync(staging)) {
   const from = join(staging, name)
@@ -26,5 +39,5 @@ for (const name of readdirSync(staging)) {
     cpSync(from, to)
   }
 }
-rmSync(staging, { recursive: true, force: true })
+rmSafe(staging)
 console.log('Flattened H5 assets into dist/ for Docker nginx (kept dist/build for mp-weixin).')

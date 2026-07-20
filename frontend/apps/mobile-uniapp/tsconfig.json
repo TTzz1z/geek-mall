@@ -8,8 +8,8 @@
     },
     "lib": ["ESNext", "DOM"],
     "types": ["@dcloudio/types"],
-    "verbatimModuleSyntax": false,
-    "ignoreDeprecations": "6.0"
+    "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "exclude": ["src/**/*.test.ts", "node_modules", "dist"]
 }

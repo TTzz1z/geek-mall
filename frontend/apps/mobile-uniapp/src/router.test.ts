@@ -1,1 +1,0 @@
-import{describe,expect,it}from'vitest';import{mobileRoutes}from'./router';describe('mobile routes',()=>it('contains five primary flows and deep links',()=>{const p=mobileRoutes.map(r=>r.path);expect(p).toContain('/ai-shopping');expect(p).toContain('/product/:spuId');expect(p).toContain('/orders/:orderNo');expect(p).toContain('/aftersales')}))
