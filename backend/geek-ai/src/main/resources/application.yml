@@ -1,0 +1,45 @@
+server:
+  port: ${AI_PORT:9011}
+  servlet.encoding:
+    charset: UTF-8
+    enabled: true
+    force: true
+spring:
+  application.name: geek-ai
+  datasource:
+    url: ${AI_MYSQL_URL:jdbc:mysql://localhost:3306/geek_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USER:geek}
+    password: ${MYSQL_PASSWORD:geek_local_password}
+  flyway.locations: classpath:db/migration
+  cloud.nacos.discovery.server-addr: ${NACOS_ADDR:localhost:8848}
+geek:
+  auth.jwt-secret: ${JWT_SECRET:change-this-local-secret-at-least-32-bytes-long}
+  internal-key: ${INTERNAL_SERVICE_KEY:CHANGE_ME_INTERNAL_SERVICE_KEY}
+  product-service-url: ${PRODUCT_SERVICE_URL:http://localhost:9002}
+  trade-service-url: ${TRADE_SERVICE_URL:http://localhost:9005}
+  search-service-url: ${SEARCH_SERVICE_URL:http://localhost:9004}
+  aftersale-service-url: ${AFTERSALE_SERVICE_URL:http://localhost:9008}
+  elasticsearch-url: ${ELASTICSEARCH_URL:http://localhost:9200}
+  milvus:
+    enabled: ${MILVUS_ENABLED:false}
+    host: ${MILVUS_HOST:localhost}
+    port: ${MILVUS_PORT:19530}
+  llm:
+    enabled: ${LLM_ENABLED:true}
+    base-url: ${LLM_BASE_URL:https://api.deepseek.com}
+    api-key: ${LLM_API_KEY:}
+    model: ${LLM_MODEL:deepseek-v4-flash}
+    timeout-ms: ${LLM_TIMEOUT_MS:60000}
+    planner-enabled: ${LLM_PLANNER_ENABLED:true}
+    planner-timeout-ms: ${LLM_PLANNER_TIMEOUT_MS:12000}
+    planner-max-tool-steps: ${LLM_PLANNER_MAX_TOOL_STEPS:5}
+    replan-enabled: ${LLM_REPLAN_ENABLED:true}
+    plan-cache-enabled: ${LLM_PLAN_CACHE_ENABLED:true}
+    plan-cache-ttl-ms: ${LLM_PLAN_CACHE_TTL_MS:60000}
+    planner-max-concurrent: ${LLM_PLANNER_MAX_CONCURRENT:4}
+    planner-acquire-timeout-ms: ${LLM_PLANNER_ACQUIRE_TIMEOUT_MS:50}
+  model:
+    primary: ${AI_MODEL_PRIMARY:${LLM_MODEL:deepseek-v4-flash}}
+    fallback: ${AI_MODEL_FALLBACK:geek-chat-fallback}
+    fail-primary: ${AI_MODEL_FAIL_PRIMARY:false}
+management.endpoints.web.exposure.include: health,info,prometheus

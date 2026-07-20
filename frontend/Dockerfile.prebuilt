@@ -1,0 +1,8 @@
+# Pack a locally built SPA into nginx. Use when full Node image builds are flaky.
+# Prerequisite: pnpm --filter @geek-mall/<APP> build (with VITE_API_BASE_URL= for docker).
+ARG APP=mall-web
+FROM nginx:1.27-alpine
+ARG APP
+COPY deploy/nginx-spa.conf /etc/nginx/conf.d/default.conf
+COPY apps/${APP}/dist /usr/share/nginx/html
+HEALTHCHECK --interval=15s --timeout=3s --retries=5 CMD wget -qO- http://127.0.0.1/healthz || exit 1

@@ -1,0 +1,20 @@
+{
+  "title": "Geek Mall Health",
+  "uid": "geek-mall-health",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Probe Success",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "probe_success",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    }
+  ]
+}

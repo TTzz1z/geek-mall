@@ -1,0 +1,28 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:geek_system;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  cloud:
+    nacos:
+      discovery:
+        enabled: false
+  data:
+    redis:
+      repositories:
+        enabled: false
+  flyway:
+    enabled: true
+
+geek:
+  auth:
+    jwt-secret: unit-test-secret-must-have-at-least-thirty-two-bytes
+    issuer: geek-mall-test
+    access-ttl: 15m
+    refresh-ttl: 7d
+
+management:
+  health:
+    redis:
+      enabled: false

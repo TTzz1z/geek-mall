@@ -1,0 +1,58 @@
+name: phase-7-ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21', cache: maven }
+      - name: Verify backend unit/integration and migrations
+        working-directory: backend
+        run: mvn -B -ntp verify
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.8.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml }
+      - name: Install
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck, test and build
+        working-directory: frontend
+        run: pnpm typecheck && pnpm test && pnpm build
+  compose-contract-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose definitions
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.test.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.observability.yml config --quiet
+      - name: Contract schema samples
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          schema=json.loads(pathlib.Path('contracts/events/domain-event.schema.json').read_text(encoding='utf-8'))
+          required=schema['required']; allowed=set(schema['properties']['eventType']['enum'])
+          fail=0
+          for p in pathlib.Path('contracts/events/samples').glob('*.json'):
+            obj=json.loads(p.read_text(encoding='utf-8'))
+            missing=[f for f in required if f not in obj]
+            if missing or obj.get('eventType') not in allowed:
+              print('FAIL', p, missing, obj.get('eventType')); fail+=1
+            else:
+              print('PASS', p.name)
+          sys.exit(fail)
+          PY
+      - name: Dependency vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with: { scan-type: fs, scan-ref: '.', severity: 'CRITICAL,HIGH', exit-code: '1', ignore-unfixed: true }

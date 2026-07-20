@@ -1,0 +1,8 @@
+{
+  "name": "@geek-mall/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@geek-mall/api-types": "workspace:*" },
+  "exports": { ".": "./src/index.ts" }
+}

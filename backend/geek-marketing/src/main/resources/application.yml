@@ -1,0 +1,19 @@
+server.port: ${MARKETING_PORT:9007}
+spring:
+  application.name: geek-marketing
+  datasource:
+    url: ${MARKETING_MYSQL_URL:jdbc:mysql://localhost:3306/geek_marketing?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USER:geek}
+    password: ${MYSQL_PASSWORD:geek_local_password}
+  flyway.locations: classpath:db/migration
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    username: ${RABBITMQ_USER:geek}
+    password: ${RABBITMQ_PASSWORD:geek_local_password}
+  cloud.nacos.discovery.server-addr: ${NACOS_ADDR:localhost:8848}
+geek:
+  auth.jwt-secret: ${JWT_SECRET:change-this-local-secret-at-least-32-bytes-long}
+  internal-key: ${INTERNAL_SERVICE_KEY:CHANGE_ME_INTERNAL_SERVICE_KEY}
+  redis.host: ${REDIS_HOST:localhost}
+  redis.port: ${REDIS_PORT:6379}
+management.endpoints.web.exposure.include: health,info,prometheus

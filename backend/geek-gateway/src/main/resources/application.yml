@@ -1,0 +1,94 @@
+server:
+  port: ${GATEWAY_PORT:8080}
+
+spring:
+  application:
+    name: geek-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        username: ${NACOS_USER:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+    gateway:
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origin-patterns: ${CORS_ORIGINS:http://localhost:*,http://127.0.0.1:*}
+            allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+            allowed-headers: '*'
+            allow-credentials: true
+      routes:
+        - id: trade
+          uri: ${TRADE_SERVICE_URI:http://localhost:9005}
+          predicates:
+            - Path=/api/v1/trade/**,/api/v1/payments/**,/api/v1/admin/trade/**
+        - id: member
+          uri: ${MEMBER_SERVICE_URI:http://localhost:9006}
+          predicates:
+            - Path=/api/v1/user/member,/api/v1/user/points/**,/api/v1/user/addresses/**
+        - id: marketing
+          uri: ${MARKETING_SERVICE_URI:http://localhost:9007}
+          predicates:
+            - Path=/api/v1/marketing/**,/api/v1/admin/marketing/**
+        - id: aftersale
+          uri: ${AFTERSALE_SERVICE_URI:http://localhost:9008}
+          predicates:
+            - Path=/api/v1/aftersales/**,/api/v1/reviews/**,/api/v1/merchant/aftersales/**,/api/v1/admin/arbitrations/**
+        - id: service-center
+          uri: ${SERVICE_CENTER_URI:http://localhost:9009}
+          predicates:
+            - Path=/api/v1/service/**,/api/v1/messages/**,/api/v1/user/messages,/api/v1/admin/service/**,/ws/service/**
+        - id: settlement
+          uri: ${SETTLEMENT_SERVICE_URI:http://localhost:9010}
+          predicates:
+            - Path=/api/v1/merchant/settlements/**,/api/v1/merchant/withdrawals/**,/api/v1/merchant/deposit,/api/v1/merchant/analytics/**,/api/v1/user/invoices/**,/api/v1/admin/withdrawals/**,/api/v1/admin/settlements/**,/api/v1/admin/analytics/**
+        - id: ai
+          uri: ${AI_SERVICE_URI:http://localhost:9011}
+          predicates:
+            - Path=/api/v1/ai/**,/api/v1/admin/ai/**
+        - id: search-recommend
+          uri: ${SEARCH_SERVICE_URI:http://localhost:9004}
+          predicates:
+            - Path=/api/v1/search/**,/api/v1/admin/search/**
+        - id: inventory-fulfillment
+          uri: ${INVENTORY_SERVICE_URI:http://localhost:9003}
+          predicates:
+            - Path=/api/v1/inventory/**,/api/v1/admin/warehouses/**,/api/v1/admin/inventory/**,/api/v1/admin/fulfillments/**,/api/v1/merchant/inventory/**,/api/v1/merchant/fulfillments/**,/api/v1/warehouse/**,/api/v1/logistics/**
+        - id: merchant-product
+          uri: ${PRODUCT_SERVICE_URI:http://localhost:9002}
+          predicates:
+            - Path=/api/v1/products/**,/api/v1/shops/**,/api/v1/merchant/applications/**,/api/v1/merchant/shop/**,/api/v1/merchant/products/**,/api/v1/merchant/subaccounts/**,/api/v1/admin/merchant/**,/api/v1/admin/merchants/**,/api/v1/admin/shop/**,/api/v1/admin/products/**,/api/v1/admin/catalog/**,/api/v1/admin/categories/**,/api/v1/admin/brands/**,/api/v1/user/favorites/**,/api/v1/user/shops/**,/api/v1/user/history/**
+        - id: marketing-cms
+          uri: ${MARKETING_SERVICE_URI:http://localhost:9007}
+          predicates:
+            - Path=/api/v1/cms/**,/api/v1/admin/cms/**
+        - id: auth-system
+          uri: ${AUTH_SERVICE_URI:http://localhost:9001}
+          predicates:
+            - Path=/api/v1/auth/**,/api/v1/admin/menus,/api/v1/admin/menus/**,/api/v1/admin/users/**,/api/v1/admin/roles/**,/api/v1/admin/audit-logs,/api/v1/merchant/demo/orders,/v3/api-docs/**,/swagger-ui/**
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+geek:
+  auth:
+    jwt-secret: ${JWT_SECRET:change-this-local-secret-at-least-32-bytes-long}
+    issuer: geek-mall
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,gateway
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSXXX}","level":"%p","service":"geek-gateway","logger":"%logger{36}","message":"%replace(%msg){''[\r\n]'','' ''}"}%n'

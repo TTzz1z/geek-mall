@@ -1,0 +1,43 @@
+server:
+  port: ${PRODUCT_PORT:9002}
+spring:
+  application:
+    name: geek-merchant-product
+  datasource:
+    url: ${PRODUCT_MYSQL_URL:jdbc:mysql://localhost:3306/geek_merchant_product?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USER:geek}
+    password: ${MYSQL_PASSWORD:geek_local_password}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:geek}
+    password: ${RABBITMQ_PASSWORD:geek_local_password}
+    publisher-confirm-type: correlated
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 21MB
+geek:
+  auth:
+    jwt-secret: ${JWT_SECRET:change-this-local-secret-at-least-32-bytes-long}
+    issuer: geek-mall
+  internal-key: ${INTERNAL_SERVICE_KEY:CHANGE_ME_INTERNAL_SERVICE_KEY}
+  ai-service-url: ${AI_SERVICE_URL:http://127.0.0.1:9011}
+  object-storage:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9100}
+    access-key: ${MINIO_ACCESS_KEY:geek}
+    secret-key: ${MINIO_SECRET_KEY:geek_local_password}
+    bucket: ${MINIO_BUCKET:geek-product-documents}
+    public-base-url: ${MINIO_PUBLIC_BASE_URL:http://127.0.0.1:9100}
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.probes.enabled: true
+logging:
+  pattern.console: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSXXX}","level":"%p","service":"geek-merchant-product","request_id":"%X{request_id:-}","message":"%replace(%msg){''[\r\n]'','' ''}"}%n'

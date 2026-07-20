@@ -1,0 +1,418 @@
+name: geek-mall
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-root-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-geek_system}
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      TZ: Asia/Shanghai
+    ports: ["3306:3306"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./deploy/mysql/init-databases.sql:/docker-entrypoint-initdb.d/01-geek-databases.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-change-root-password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  rabbitmq:
+    image: rabbitmq:4.0-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-geek_local_password}
+    ports: ["5672:5672", "15672:15672"]
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["9200:9200"]
+    volumes: ["elasticsearch-data:/usr/share/elasticsearch/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health?wait_for_status=yellow || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 30
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-geek}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-geek_local_password}
+    ports: ["9100:9000", "9101:9001"]
+    volumes: ["minio-data:/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+  nacos:
+    image: nacos/nacos-server:v2.4.3
+    environment:
+      MODE: standalone
+      # Local phase-1 baseline: keep Nacos isolated on the Compose network and
+      # disable its own account bootstrap. Production must override this.
+      NACOS_AUTH_ENABLE: "false"
+      NACOS_AUTH_IDENTITY_KEY: geekmall
+      NACOS_AUTH_IDENTITY_VALUE: geekmall-local
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-VGhpc0lzQVNlY3VyZUxvY2FsVG9rZW5Gb3JHZWVrTWFsbE5hY29z}
+    ports: ["8848:8848", "9848:9848"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8848/nacos/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  auth-system:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-auth-system } }
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/geek_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      REDIS_HOST: redis
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9001:9001"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9001'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  gateway:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-gateway } }
+    environment:
+      AUTH_SERVICE_URI: http://auth-system:9001
+      PRODUCT_SERVICE_URI: http://merchant-product:9002
+      INVENTORY_SERVICE_URI: http://inventory-fulfillment:9003
+      SEARCH_SERVICE_URI: http://search-recommend:9004
+      TRADE_SERVICE_URI: http://trade:9005
+      MEMBER_SERVICE_URI: http://member:9006
+      MARKETING_SERVICE_URI: http://marketing:9007
+      AFTERSALE_SERVICE_URI: http://aftersale:9008
+      SERVICE_CENTER_URI: http://service-center:9009
+      SETTLEMENT_SERVICE_URI: http://settlement:9010
+      AI_SERVICE_URI: ${AI_SERVICE_URI:-http://ai:9011}
+      REDIS_HOST: redis
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:*,http://127.0.0.1:*}
+    ports: ["8080:8080"]
+    depends_on:
+      auth-system: { condition: service_healthy }
+      merchant-product: { condition: service_healthy }
+      inventory-fulfillment: { condition: service_healthy }
+      search-recommend: { condition: service_healthy }
+      trade: { condition: service_healthy }
+      member: { condition: service_healthy }
+      marketing: { condition: service_healthy }
+      aftersale: { condition: service_healthy }
+      service-center: { condition: service_healthy }
+      settlement: { condition: service_healthy }
+      ai: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  merchant-product:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-merchant-product } }
+    environment:
+      PRODUCT_MYSQL_URL: jdbc:mysql://mysql:3306/geek_merchant_product?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai:9011}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-geek}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-geek_local_password}
+      MINIO_BUCKET: ${MINIO_BUCKET:-geek-product-documents}
+      MINIO_PUBLIC_BASE_URL: ${MINIO_PUBLIC_BASE_URL:-http://127.0.0.1:9100}
+    ports: ["9002:9002"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9002'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  inventory-fulfillment:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-inventory-fulfillment } }
+    environment:
+      INVENTORY_MYSQL_URL: jdbc:mysql://mysql:3306/geek_inventory?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      AFTERSALE_SERVICE_URL: http://aftersale:9008
+      TRADE_SERVICE_URL: http://trade:9005
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9003:9003"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9003'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  trade:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-trade } }
+    environment:
+      TRADE_MYSQL_URL: jdbc:mysql://mysql:3306/geek_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      PRODUCT_SERVICE_URL: http://merchant-product:9002
+      INVENTORY_SERVICE_URL: http://inventory-fulfillment:9003
+      MARKETING_SERVICE_URL: http://marketing:9007
+      MEMBER_SERVICE_URL: http://member:9006
+      SETTLEMENT_SERVICE_URL: http://settlement:9010
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      PAYMENT_CALLBACK_SECRET: ${PAYMENT_CALLBACK_SECRET:-change-payment-callback-secret}
+      PAYMENT_WECHAT_ENABLED: ${PAYMENT_WECHAT_ENABLED:-false}
+      PAYMENT_ALIPAY_ENABLED: ${PAYMENT_ALIPAY_ENABLED:-false}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9005:9005"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      merchant-product: { condition: service_healthy }
+      inventory-fulfillment: { condition: service_healthy }
+      settlement: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9005'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  member:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-member } }
+    environment:
+      MEMBER_MYSQL_URL: jdbc:mysql://mysql:3306/geek_member?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-geek}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+    ports: ["9006:9006"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9006'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  marketing:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-marketing } }
+    environment:
+      MARKETING_MYSQL_URL: jdbc:mysql://mysql:3306/geek_marketing?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9007:9007"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9007'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  aftersale:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-aftersale-service } }
+    environment:
+      AFTERSALE_MYSQL_URL: jdbc:mysql://mysql:3306/geek_aftersale?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      TRADE_SERVICE_URL: http://trade:9005
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9008:9008"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      trade: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9008'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  service-center:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-service-center } }
+    environment:
+      SERVICE_MYSQL_URL: jdbc:mysql://mysql:3306/geek_service?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9009:9009"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9009'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  settlement:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-settlement } }
+    environment:
+      SETTLEMENT_MYSQL_URL: jdbc:mysql://mysql:3306/geek_settlement?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9010:9010"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9010'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  search-recommend:
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-search-recommend } }
+    environment:
+      SEARCH_MYSQL_URL: jdbc:mysql://mysql:3306/geek_search?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-geek}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      PRODUCT_SERVICE_URL: http://merchant-product:9002
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9004:9004"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+      merchant-product: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9004'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  ai:
+    image: geek-mall-ai:latest
+    build: { context: ./backend, dockerfile: Dockerfile, args: { MODULE: geek-ai } }
+    environment:
+      AI_MYSQL_URL: jdbc:mysql://mysql:3306/geek_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      MYSQL_USER: ${MYSQL_USER:-geek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      PRODUCT_SERVICE_URL: http://merchant-product:9002
+      TRADE_SERVICE_URL: http://trade:9005
+      SEARCH_SERVICE_URL: http://search-recommend:9004
+      AFTERSALE_SERVICE_URL: http://aftersale:9008
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      MILVUS_ENABLED: ${MILVUS_ENABLED:-false}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      AI_MODEL_PRIMARY: ${AI_MODEL_PRIMARY:-deepseek-v4-flash}
+      AI_MODEL_FALLBACK: ${AI_MODEL_FALLBACK:-geek-chat-fallback}
+      AI_MODEL_FAIL_PRIMARY: ${AI_MODEL_FAIL_PRIMARY:-false}
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+    ports: ["9011:9011"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+      nacos: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9011'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  mall-web:
+    build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: mall-web } }
+    ports: ["8088:80"]
+    depends_on:
+      gateway: { condition: service_healthy }
+  admin-web:
+    build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: admin-web } }
+    ports: ["8089:80"]
+    depends_on:
+      gateway: { condition: service_healthy }
+  mobile-uniapp:
+    build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: mobile-uniapp } }
+    ports: ["8090:80"]
+  ops-screen:
+    build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: ops-screen } }
+    ports: ["8091:80"]
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+  elasticsearch-data:
+  minio-data:

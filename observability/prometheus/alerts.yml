@@ -1,0 +1,25 @@
+groups:
+  - name: geek-mall-alerts
+    rules:
+      - alert: ServiceDown
+        expr: probe_success == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Geek Mall endpoint down"
+          description: "{{ $labels.instance }} health probe failed"
+      - alert: HighErrorRate
+        expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 5xx rate elevated"
+      - alert: AiServiceDown
+        expr: probe_success{instance="http://host.docker.internal:9011/actuator/health"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AI service unavailable (non-blocking for trade)"

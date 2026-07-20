@@ -1,0 +1,9 @@
+# Runtime-only image: jar is staged by scripts/build-ai-image.ps1 into .docker-stage/
+# (backend/.dockerignore excludes **/target, so we cannot COPY from geek-ai/target).
+FROM eclipse-temurin:21-jre-jammy
+RUN useradd --system --uid 10001 geek
+USER geek
+WORKDIR /app
+COPY .docker-stage/app.jar app.jar
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75"
+ENTRYPOINT ["sh","-c","java $JAVA_OPTS -jar /app/app.jar"]

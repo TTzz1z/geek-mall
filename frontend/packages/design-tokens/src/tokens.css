@@ -1,0 +1,48 @@
+:root {
+  color-scheme: light;
+  --geek-brand: #ff5a1f;
+  --geek-brand-hover: #e94b12;
+  --geek-brand-soft: #fff1eb;
+  --geek-ink: #191919;
+  --geek-ink-secondary: #4b5563;
+  --geek-muted: #737b86;
+  --geek-canvas: #f3f5f7;
+  --geek-surface: #ffffff;
+  --geek-surface-subtle: #eef1f3;
+  --geek-border: #e4e7eb;
+  --geek-success: #16803c;
+  --geek-warning: #b86200;
+  --geek-danger: #c92a2a;
+  --geek-radius-xs: 2px;
+  --geek-radius-sm: 6px;
+  --geek-radius-md: 12px;
+  --geek-radius-pill: 999px;
+  --geek-shadow-float: 0 18px 48px rgba(25, 25, 25, 0.12);
+  --geek-shadow-card: 0 8px 24px rgba(25, 25, 25, 0.06);
+  --geek-space-1: 4px;
+  --geek-space-2: 8px;
+  --geek-space-3: 12px;
+  --geek-space-4: 16px;
+  --geek-space-5: 24px;
+  --geek-space-6: 32px;
+  --geek-space-7: 48px;
+  --geek-space-8: 64px;
+  --geek-layout-max: 1440px;
+  --geek-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --geek-duration-fast: 160ms;
+  --geek-duration-base: 240ms;
+  --geek-z-header: 40;
+  --geek-z-overlay: 80;
+  --geek-z-toast: 100;
+  font-family: Inter, "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; color: var(--geek-ink); background: var(--geek-canvas); }
+button, input, select, textarea { font: inherit; }
+a { color: inherit; }
+:focus-visible { outline: 3px solid rgba(255, 90, 31, 0.5); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

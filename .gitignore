@@ -1,0 +1,62 @@
+# Git ignore — Geek Mall
+
+# Secrets & local env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.iml
+
+# Logs & temp
+*.log
+.tmp-*
+tmp/
+reports/
+design-qa-artifacts/
+
+# Backups & local DB dumps
+backups/
+*.sql.sha256
+
+# Backend build
+backend/**/target/
+backend/.docker-stage/
+BOOT-INF/
+
+# Frontend build & deps
+frontend/node_modules/
+frontend/**/node_modules/
+frontend/**/dist/
+frontend/**/*.tsbuildinfo
+frontend/apps/mobile-uniapp/dist/
+
+# E2E deps
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+
+# Perf / observability local output
+perf/reports/
+
+# Agent / browser local artifacts
+.agents/
+.codex/
+.playwright-cli/
+.playwright-mcp/
+.cursor/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Misc
+*.jar
+!**/src/**/resources/**/*.jar

@@ -1,0 +1,21 @@
+{
+  "name": "@geek-mall/mall-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "typecheck": "vue-tsc -b --pretty false",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@geek-mall/api-client": "workspace:*",
+    "@geek-mall/api-types": "workspace:*",
+    "@geek-mall/design-tokens": "workspace:*",
+    "@phosphor-icons/vue": "2.2.1",
+    "pinia": "2.2.6",
+    "vue": "3.5.13",
+    "vue-router": "4.5.0"
+  }
+}

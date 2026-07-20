@@ -1,0 +1,18 @@
+package com.geekmall.inventory;
+import com.geekmall.common.api.ApiResponse;import com.geekmall.common.api.BusinessException;import com.geekmall.common.security.AuthPrincipal;import jakarta.servlet.http.HttpServletRequest;import jakarta.validation.Valid;import jakarta.validation.constraints.*;import org.springframework.beans.factory.annotation.Value;import org.springframework.security.access.prepost.PreAuthorize;import org.springframework.security.core.annotation.AuthenticationPrincipal;import org.springframework.web.bind.annotation.*;import java.time.Instant;import java.util.*;
+@RestController @RequestMapping("/api/v1") class InventoryController{private final InventoryService s;private final String internalKey;InventoryController(InventoryService s,@Value("${geek.internal-key}")String internalKey){this.s=s;this.internalKey=internalKey;}
+ @GetMapping("/admin/warehouses") @PreAuthorize("hasAnyRole('SYSTEM_ADMIN','MERCHANT')") ApiResponse<List<Map<String,Object>>> warehouses(HttpServletRequest r){return ok(s.warehouses(),r);}
+ @GetMapping("/admin/inventory/low-stock-summary") @PreAuthorize("hasAnyRole('SYSTEM_ADMIN','OPS')") ApiResponse<Map<String,Object>> lowStockSummary(HttpServletRequest r){return ok(s.lowStockSummary(),r);}
+ @GetMapping({"/inventory/stocks","/merchant/inventory/stocks"}) @PreAuthorize("hasRole('MERCHANT')") ApiResponse<List<Map<String,Object>>> stocks(@RequestParam(required=false)Long warehouseId,HttpServletRequest r){return ok(s.stocks(warehouseId),r);}
+ @GetMapping("/merchant/inventory/logs") @PreAuthorize("hasRole('MERCHANT')") ApiResponse<List<Map<String,Object>>> logs(@RequestParam(required=false)Long skuId,HttpServletRequest r){return ok(s.logs(skuId),r);}
+ @PostMapping("/merchant/inventory/inbounds") @PreAuthorize("hasRole('MERCHANT')") ApiResponse<Map<String,Object>> inbound(@Valid @RequestBody InboundRequest b,@RequestHeader(value="Idempotency-Key",required=false)String key,@AuthenticationPrincipal AuthPrincipal p,HttpServletRequest r){return ok(s.inbound(b,key,p),r);}
+ @PostMapping("/internal/inventory/availability") ApiResponse<List<Map<String,Object>>> availability(@RequestHeader("X-Internal-Key")String key,@RequestBody List<AvailabilityItem> items,HttpServletRequest r){internal(key);return ok(s.availability(items),r);}
+ @PostMapping("/internal/inventory/reservations") ApiResponse<Map<String,Object>> reserve(@RequestHeader("X-Internal-Key")String key,@Valid @RequestBody ReservationRequest b,HttpServletRequest r){internal(key);return ok(s.reserve(b),r);}
+ @PostMapping("/internal/inventory/reservations/{orderNo}/release") ApiResponse<Map<String,Object>> release(@RequestHeader("X-Internal-Key")String key,@PathVariable String orderNo,HttpServletRequest r){internal(key);return ok(s.release(orderNo),r);}
+ @PostMapping("/internal/inventory/reservations/{orderNo}/deduct") ApiResponse<Map<String,Object>> deduct(@RequestHeader("X-Internal-Key")String key,@PathVariable String orderNo,HttpServletRequest r){internal(key);return ok(s.deduct(orderNo),r);}
+ private void internal(String key){com.geekmall.common.security.InternalServiceAccess.require(key, internalKey);}
+ private static<T>ApiResponse<T>ok(T d,HttpServletRequest r){return ApiResponse.success(d,String.valueOf(r.getAttribute("requestId")));}record InboundRequest(@NotNull Long warehouseId,@NotNull Long skuId,@Min(1)int quantity){}
+ record AvailabilityItem(@NotNull Long merchantId,@NotNull Long skuId,@Min(1)int quantity){}
+ record ReservationItem(@NotNull Long merchantId,@NotNull Long shopId,@NotNull Long skuId,@Min(1)int quantity){}
+ record ReservationRequest(@NotNull Long orderId,@NotBlank String orderNo,String regionCode,@NotNull Instant expiresAt,@NotEmpty List<@Valid ReservationItem> items){}
+}

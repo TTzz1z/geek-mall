@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GeekMallDomainEvent",
+  "type": "object",
+  "required": ["eventId", "eventType", "aggregateId", "payload"],
+  "properties": {
+    "eventId": { "type": "string", "minLength": 8 },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "product.spu.on-sale.v1",
+        "product.spu.off-sale.v1",
+        "trade.order.created.v1",
+        "payment.payment.succeeded.v1",
+        "trade.order.cancelled.v1",
+        "inventory.stock.deducted.v1",
+        "aftersale.refund.completed.v1"
+      ]
+    },
+    "aggregateType": { "type": "string" },
+    "aggregateId": { "type": "string" },
+    "payload": { "type": "object" },
+    "occurredAt": { "type": "string" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,5 @@
+<script setup lang="ts">
+import { onMounted,ref } from 'vue';import { useRoute,RouterLink } from 'vue-router';import { PhCheckCircle as Check,PhWarningCircle as Warning } from '@phosphor-icons/vue';import type { PaymentInfo } from '@geek-mall/api-types';import { tradeApi } from '../api/trade'
+const route=useRoute(),payment=ref<PaymentInfo|null>(null),error=ref('');onMounted(async()=>{try{payment.value=await tradeApi.payment(String(route.query.paymentNo))}catch(e){error.value=e instanceof Error?e.message:'支付结果加载失败'}})
+</script>
+<template><section class="trade-page result-page"><article v-if="payment"><Check v-if="payment.status==='SUCCESS'" :size="58"/><Warning v-else :size="58"/><p>PAYMENT RESULT</p><h1>{{payment.status==='SUCCESS'?'支付成功':'支付处理中'}}</h1><strong>¥{{Number(payment.amount).toLocaleString()}}</strong><span>支付单 {{payment.paymentNo}}</span><div><RouterLink :to="`/user/orders/${payment.orderNo}`">查看订单</RouterLink><RouterLink to="/">返回首页</RouterLink></div></article><div v-else-if="error" class="trade-state error">{{error}}</div><div v-else class="trade-state">正在确认支付结果…</div></section></template>

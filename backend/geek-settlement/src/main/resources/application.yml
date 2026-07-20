@@ -1,0 +1,19 @@
+server.port: ${SETTLEMENT_PORT:9010}
+spring:
+  application.name: geek-settlement
+  datasource:
+    url: ${SETTLEMENT_MYSQL_URL:jdbc:mysql://localhost:3306/geek_settlement?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USER:geek}
+    password: ${MYSQL_PASSWORD:geek_local_password}
+  flyway.locations: classpath:db/migration
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:geek}
+    password: ${RABBITMQ_PASSWORD:geek_local_password}
+  cloud.nacos.discovery.server-addr: ${NACOS_ADDR:localhost:8848}
+geek:
+  auth.jwt-secret: ${JWT_SECRET:change-this-local-secret-at-least-32-bytes-long}
+  internal-key: ${INTERNAL_SERVICE_KEY:CHANGE_ME_INTERNAL_SERVICE_KEY}
+  commission-rate: ${COMMISSION_RATE:0.05}
+management.endpoints.web.exposure.include: health,info,prometheus

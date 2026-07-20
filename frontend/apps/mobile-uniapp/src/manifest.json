@@ -1,0 +1,37 @@
+{
+  "name": "极客商城",
+  "appid": "__UNI__GEEKMALL",
+  "description": "极客商城 H5 与微信小程序统一移动端（正式 uni-app）",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3
+  },
+  "quickapp": {},
+  "mp-weixin": {
+    "appid": "",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "minified": true
+    },
+    "usingComponents": true,
+    "lazyCodeLoading": "requiredComponents"
+  },
+  "mp-alipay": { "usingComponents": true },
+  "mp-baidu": { "usingComponents": true },
+  "mp-toutiao": { "usingComponents": true },
+  "h5": {
+    "title": "极客商城移动版",
+    "router": { "mode": "hash", "base": "./" },
+    "devServer": {
+      "port": 5175,
+      "disableHostCheck": true
+    }
+  },
+  "uniStatistics": { "enable": false },
+  "vueVersion": "3"
+}

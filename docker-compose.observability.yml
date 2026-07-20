@@ -1,0 +1,38 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    ports: ["9115:9115"]
+
+  grafana:
+    image: grafana/grafana:11.1.4
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: geek_local_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"

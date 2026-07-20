@@ -1,0 +1,2 @@
+package com.geekmall.marketing;import org.junit.jupiter.api.Test;import java.math.*;import java.util.*;import static org.junit.jupiter.api.Assertions.*;
+class PromotionAllocatorTest {@Test void allocatesEveryCentAndNeverExceedsItemAmounts(){var r=PromotionAllocator.allocate(List.of(new BigDecimal("3.00"),new BigDecimal("2.00"),new BigDecimal("1.00")),new BigDecimal("1.00"));assertEquals(new BigDecimal("1.00"),r.stream().reduce(BigDecimal.ZERO,BigDecimal::add));assertEquals(List.of(new BigDecimal("0.50"),new BigDecimal("0.33"),new BigDecimal("0.17")),r);}}

@@ -1,0 +1,12 @@
+{
+  "name": "@geek-mall/e2e-smoke",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test": "playwright test",
+    "test:api": "playwright test --project=api"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}

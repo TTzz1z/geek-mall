@@ -1,0 +1,37 @@
+# 开发叠加：默认把重量级前端/全量服务放到 profile=full
+# 用法示例:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --no-build mysql redis rabbitmq elasticsearch nacos minio
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile full up -d --no-build
+services:
+  auth-system:
+    profiles: ["full"]
+  gateway:
+    profiles: ["full"]
+  merchant-product:
+    profiles: ["full"]
+  inventory-fulfillment:
+    profiles: ["full"]
+  search-recommend:
+    profiles: ["full"]
+  trade:
+    profiles: ["full"]
+  member:
+    profiles: ["full"]
+  marketing:
+    profiles: ["full"]
+  aftersale:
+    profiles: ["full"]
+  service-center:
+    profiles: ["full"]
+  settlement:
+    profiles: ["full"]
+  ai:
+    profiles: ["full"]
+  mall-web:
+    profiles: ["full"]
+  admin-web:
+    profiles: ["full"]
+  mobile-uniapp:
+    profiles: ["full"]
+  ops-screen:
+    profiles: ["full"]
