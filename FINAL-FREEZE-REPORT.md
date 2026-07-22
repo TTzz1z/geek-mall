@@ -9,9 +9,9 @@
 
 - 分支：`main`
 - 上一远端基线：`4298d6b1d12144de2e140424591c0566b2072c42`
-- 本轮本地冻结提交：见文末 Commit SHA（创建后回填）
+- 本轮本地冻结提交：`d8d6c52b665f611f9b6e2a18a963849d7bf52dea`（`chore: finalize geek mall portfolio release`）
 - 远端：`TTzz1z/geek-mall`
-- 本轮 **禁止** `git push`，**禁止** 重写 Git 历史。
+- 本轮 **禁止** `git push`，**禁止** 重写 Git 历史。工作区在回填本 SHA 后保持与该提交一致。
 
 ## 2. 运行环境
 
