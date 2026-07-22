@@ -106,15 +106,38 @@ pnpm dev:mall       # 另开终端可运行 dev:admin / dev:mobile / dev:ops
 
 ## 截图
 
-| 商城首页 | 商品详情 | AI 导购 |
-|---|---|---|
-| ![商城首页](docs/images/mall-home.png) | ![商品详情](docs/images/mall-product-detail.png) | ![AI 导购](docs/images/mall-ai-shopping.png) |
+截图单独成块展示（不再塞进表格单元格），方便在 GitHub 上直接看清界面。
 
-| 移动 H5 | 商家商品 | 后台首页装修 |
-|---|---|---|
-| ![移动 H5](docs/images/mobile-home.png) | ![商家商品](docs/images/merchant-products.png) | ![后台首页装修](docs/images/admin-cms-home.png) |
+### 商城首页
+
+<img src="docs/images/mall-home.png" alt="商城首页" width="920" />
+
+### 商品详情
+
+<img src="docs/images/mall-product-detail.png" alt="商品详情" width="920" />
+
+### AI 导购
+
+<img src="docs/images/mall-ai-shopping.png" alt="AI 导购" width="920" />
+
+### 移动 H5
+
+<img src="docs/images/mobile-home.png" alt="移动 H5" width="420" />
+
+### 商家商品
+
+<img src="docs/images/merchant-products.png" alt="商家商品" width="920" />
+
+### 管理后台 Dashboard
+
+<img src="docs/images/admin-dashboard.png" alt="管理后台 Dashboard" width="920" />
+
+### 后台首页装修
+
+<img src="docs/images/admin-cms-home.png" alt="后台首页装修" width="920" />
 
 截图索引见 [`docs/images/README.md`](docs/images/README.md)。商品封面和远程图片来源见 [`frontend/apps/mall-web/public/covers/ATTRIBUTION.md`](frontend/apps/mall-web/public/covers/ATTRIBUTION.md)。
+
 
 ## 验收命令
 
