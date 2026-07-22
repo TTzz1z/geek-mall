@@ -10,13 +10,13 @@
 | 项 | 值 |
 |---|---|
 | 分支 | `main` |
-| **最终 Commit SHA** | （推送后以 `origin/main` 为准，见第 8 节回填） |
+| **最终 Commit SHA** | `06a7a535af5090202640c3757ece990c3dac3501` |
 | 历史重写前本地 tip | `db94bfc5eeb8b5ebee40c3b535be3162c3a316b7` |
-| 历史重写后本地 tip（报告更新前提交前） | `9ce4b8b6e4d0771b698d26af3cc96650ad7a0c19` |
+| 历史重写后报告提交前 tip | `9ce4b8b6e4d0771b698d26af3cc96650ad7a0c19` |
 | 重写前 `origin/main` | `4298d6b1d12144de2e140424591c0566b2072c42` |
 | 远端 | `https://github.com/TTzz1z/geek-mall.git` |
 | 标签 | 无 |
-| 工作树与重写前 | **一致**（`HEAD^{tree}` 未变：`bb6a9f13…`，493 tracked files） |
+| 工作树与重写前 | **一致**（`HEAD^{tree}` 在 filter-repo 后未变：`bb6a9f13…`，493 tracked files；随后仅文档提交） |
 
 ## 2. 泄露范围（脱敏）
 
@@ -80,10 +80,16 @@ Gitleaks 全历史剩余 1 命中：仅 `.env.example` 文档化 `NACOS_AUTH_TOK
 
 | 项 | 结果 |
 |---|---|
-| force-with-lease | （待填） |
-| 最终 `origin/main` SHA | （待填） |
-| GitHub Actions | （待填） |
-| 全新 clone Gitleaks / 大文件 / README·LICENSE·截图 | （待填） |
+| force-with-lease | **成功**：`4298d6b...06a7a53 main -> main (forced update)`；显式 lease 目标为重写前 tip |
+| 最终 `origin/main` SHA | `06a7a535af5090202640c3757ece990c3dac3501`（与本地一致） |
+| GitHub Actions（本 SHA） | run [29920455619](https://github.com/TTzz1z/geek-mall/actions/runs/29920455619) **success**；jobs：`backend=success`、`frontend=success`、`compose-contract-security=success` |
+| Trivy | **报告型**（`exit-code: 0` + `continue-on-error: true`），不阻断合并 |
+| 全新 clone 目录 | `E:\program0713\geek-mall-fresh-verify` @ `06a7a53` |
+| clone 旧 ISK 搜索 | **0** |
+| clone Gitleaks 跟踪树 | **no leaks** |
+| clone Gitleaks 全历史 | 1 命中 = `.env.example` NACOS 文档占位（排除） |
+| 大文件 | 无 >10 MiB blob；最大约 4.9 MiB 截图 |
+| README / LICENSE / 截图 | 存在 |
 
 ## 9. 真实功能边界（仍成立）
 
