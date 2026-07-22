@@ -1,117 +1,103 @@
 # Geek Mall 最终冻结验收报告
 
 > 验收时间：2026-07-22（Asia/Shanghai）  
-> 结论：**本地组合格可提交（LOCAL FREEZE COMMIT CREATED）**；远端冻结仍 **BLOCKED**  
-> 本轮已关闭：`contract-check` 拓扑阻断、MySQL 8.4 clean-room 未验证项。  
-> 仍未关闭：Git 历史密钥尚未清理；当前新提交尚未经过远端 CI。
+> 结论：**READY TO FREEZE**  
+> 本轮已关闭全部既有冻结阻断：contract-check、MySQL 8.4 clean-room、密钥轮换、Git 历史清理、远端推送与 CI。  
+> 项目停止增加新功能；后续仅接受严重 Bug、安全问题与求职文案修正。当前版本作为求职展示冻结版本。
 
-## 1. 验收对象与版本
+## 1. 最终版本
 
-- 分支：`main`
-- 上一远端基线：`4298d6b1d12144de2e140424591c0566b2072c42`
-- 本轮本地冻结提交：`d8d6c52b665f611f9b6e2a18a963849d7bf52dea`（`chore: finalize geek mall portfolio release`）
-- 远端：`TTzz1z/geek-mall`
-- 本轮 **禁止** `git push`，**禁止** 重写 Git 历史。工作区在回填本 SHA 后保持与该提交一致。
-
-## 2. 运行环境
-
-| 项目 | 实际环境 |
+| 项 | 值 |
 |---|---|
-| OS | Windows 11，`10.0.26100`，PowerShell |
-| 时区 | Asia/Shanghai（UTC+08:00） |
-| Java / Maven | 本地 `mvn verify` PASS（Java 25 运行告警仍在，非本轮失败） |
-| Node / pnpm | `pnpm typecheck/test/build` PASS |
-| Docker Compose | 演示项目 `geek-mall`；clean-room 项目 `geek-mall-flyway-cleanroom` |
-| API 入口 | `E2E_BASE_URL=http://127.0.0.1:8088` |
+| 分支 | `main` |
+| **最终 Commit SHA** | （推送后以 `origin/main` 为准，见第 8 节回填） |
+| 历史重写前本地 tip | `db94bfc5eeb8b5ebee40c3b535be3162c3a316b7` |
+| 历史重写后本地 tip（报告更新前提交前） | `9ce4b8b6e4d0771b698d26af3cc96650ad7a0c19` |
+| 重写前 `origin/main` | `4298d6b1d12144de2e140424591c0566b2072c42` |
+| 远端 | `https://github.com/TTzz1z/geek-mall.git` |
+| 标签 | 无 |
+| 工作树与重写前 | **一致**（`HEAD^{tree}` 未变：`bb6a9f13…`，493 tracked files） |
 
-## 3. 汇总
+## 2. 泄露范围（脱敏）
 
-| 状态 | 数量 / 说明 |
-|---|---|
-| 本轮关闭的阻断 | 2：`contract-check`、MySQL 8.4 clean-room |
-| 仍未关闭的冻结阻断 | 2：Git 历史密钥；新提交无远端 CI |
-| 本地门禁 | 全部要求项 PASS（历史 Gitleaks 命中按已知 P0 保留，不计入“跟踪树泄露”） |
-
-## 4. 本轮关闭项
-
-### 4.1 contract-check
-
-- 脚本：`scripts/contract-check.ps1`
-- 删除默认 `localhost:900x` / 宿主机 `8080` 直连假设
-- 对外：`E2E_BASE_URL`（默认 `http://127.0.0.1:8088`）经 mall-web nginx
-- 对内：`docker compose exec` 在 Compose 网络用服务名检查 OpenAPI/health
-- 静态：`contracts/`、Gateway 路由、nginx `/api` 代理
-- 未执行项不计 PASS；失败退出码非 0；输出控制台摘要 + `reports/contract-check-result.json`
-- **实测：PASS（17/17）**
-
-### 4.2 MySQL 8.4 clean-room
-
-- 脚本：`scripts/flyway-cleanroom-verify.ps1`
-- 独立项目名：`geek-mall-flyway-cleanroom`；全新 MySQL 8.4 + 专用卷
-- 不触碰演示栈 `geek-mall` 数据卷
-- 11 库从空初始化；分三批启动应用；首轮 + 重启第二轮
-- 禁止 repair / baselineOnMigrate 掩盖 / 手工改历史表 / dump 冒充
-- 结束后 `down -v` 清理专用容器与卷
-- **实测：PASS**；`reports/flyway-cleanroom-result.json` overall=PASS，cleanedUp=True
-
-#### 11 库迁移结果（首轮 / 第二轮一致）
-
-| 数据库 | versioned | repeatable | failed | maxV |
-|---|---:|---:|---:|---|
-| geek_system | 2 | 1 | 0 | 2 |
-| geek_merchant_product | 2 | 1 | 0 | 2 |
-| geek_inventory | 3 | 1 | 0 | 3 |
-| geek_search | 1 | 1 | 0 | 1 |
-| geek_trade | 4 | 1 | 0 | 4 |
-| geek_member | 2 | 2 | 0 | 2 |
-| geek_marketing | 3 | 2 | 0 | 3 |
-| geek_aftersale | 1 | 0 | 0 | 1 |
-| geek_service | 1 | 1 | 0 | 1 |
-| geek_settlement | 1 | 1 | 0 | 1 |
-| geek_ai | 3 | 1 | 0 | 3 |
-
-#### Seed 快照（首轮 = 第二轮）
-
-`accounts=7 products=13 skus=14 stockRows=18 addresses=4 couponTemplates=2 knowledgeDocuments=4 knowledgeChunks=6`
-
-## 5. 本地验收命令结果
-
-| # | 检查 | 结果 |
+| 发现 | 分类 | 说明 |
 |---|---|---|
-| 1 | `git diff --check` | PASS |
-| 2 | 三套 `docker compose ... config --quiet` | PASS ×3 |
-| 3 | `mvn -B -ntp verify` | PASS（临时 Redis `geek-freeze-redis`） |
-| 4 | `pnpm typecheck` | PASS |
-| 5 | `pnpm test` | PASS（18） |
-| 6 | `pnpm build` | PASS |
-| 7 | Playwright `pnpm test:api` | PASS（2/2） |
-| 8 | `scripts/e2e-core-flow.ps1` | PASS（19/19） |
-| 9 | `scripts/concurrency-verify.ps1` | PASS（5/5） |
-| 10 | `scripts/contract-check.ps1` | PASS（17/17） |
-| 11 | `scripts/flyway-cleanroom-verify.ps1` | PASS |
-| 12 | 7 个关键页面 HTTP 200 | PASS（7/7） |
-| 13 | Gitleaks（当前跟踪文件树，不含忽略 `.env`） | PASS（no leaks） |
-| — | Gitleaks（全历史 `--all`） | FAIL 2 hits（已知历史密钥，仍为远端冻结阻断） |
+| `INTERNAL_SERVICE_KEY` 真实值（`geek-isk-…`，len=41） | **P0 真实凭据** | 出现在初始提交 `4e32bcf` 的 `scripts/hot-reload-service.ps1`，以及多个服务 `application.yml` 的默认值回退 |
+| 可达引用 | `main` / `origin/main` | 无其他本地分支；无标签 |
+| `.env.example` `NACOS_AUTH_TOKEN=VGhp…` | 文档化本地占位 | Compose `security-config-check` 明确列入不安全占位；**非业务密钥轮换对象**；Gitleaks 可能误报 |
+| `.env.example` / 源码中 `CHANGE_ME_*` | 模板 | 明确排除 |
+| 本机忽略的 `.env` 中 LLM Key | 本地秘密 | 未被 Git 跟踪；不得提交 |
 
-`.env`：存在、被 `.gitignore` 忽略、不在 `git ls-files`、不在暂存区。
+历史重写后：真实旧 `INTERNAL_SERVICE_KEY` **全历史 0 命中**（`git grep` / `-S` pickaxe）。  
+Gitleaks 全历史剩余 1 命中：仅 `.env.example` 文档化 `NACOS_AUTH_TOKEN` 占位，归类为模板误报。
 
-## 6. 仓库外备份
+## 3. 密钥轮换
 
-- 位置：`E:\program0713\geek-mall-freeze-backup-20260722-194117`
-- 内容：`git-diff-binary.patch`、`git-status-porcelain.txt`、`untracked-files.txt`
-- **未**加入仓库
+1. 旧 `INTERNAL_SERVICE_KEY` 视为已泄露。  
+2. 生成新高强度随机值（`geek-isk-` + 64 hex），**仅写入本机忽略的 `.env`**。  
+3. 未写入源码、脚本、Markdown、`.env.example` 或 Git。  
+4. `docker compose up -d --force-recreate` 相关服务后验证：  
+   - 新密钥：`GET member:/api/v1/internal/member/profiles/4` → **HTTP 200 / biz=0**  
+   - 旧密钥：同接口 → **HTTP 403 / AU40304**  
+5. `scripts/e2e-core-flow.ps1`：**19/19 PASS**（结算/营销/库存/AI 工具链路正常）。
 
-## 7. 仍未关闭的冻结阻断
+## 4. 历史清理
 
-1. **P0：Git 历史仍含实际 `INTERNAL_SERVICE_KEY`**（Gitleaks 历史 2 命中）。需轮换密钥并用评审过的历史清理方案处理；本轮禁止改写历史。
-2. **当前新提交尚未 push，无对应远端 CI run。** 基线 `4298d6b` 的 Actions 曾全绿，不能替代本提交。
+| 步骤 | 结果 |
+|---|---|
+| 仓库外 bundle | `E:\program0713\geek-mall-pre-history-rewrite.bundle`（约 17 MB，未入库、未上传） |
+| 工具 | `git filter-repo` `--replace-text`（旧真实 ISK → `CHANGE_ME_INTERNAL_SERVICE_KEY`） |
+| 禁止项 | 未使用 `filter-branch`；未只改当前文件 |
+| 清理后 | `reflog expire --expire=now --all` + `git gc --prune=now --aggressive` |
+| 陈旧引用 | 删除本机 `refs/codex/turn-diffs/...` 异常引用 |
 
-## 8. 推荐表述边界
+## 5. 第一轮已关闭项（继承）
 
-- 可表述：本地完成 contract-check 拓扑对齐、MySQL 8.4 11 库 clean-room 双轮验证，并完成本地冻结提交。
-- 不得表述：已生产上线、历史密钥已清零、本提交 GitHub Actions 已绿、真实支付已接入。
+- `contract-check`：PASS（E2E_BASE_URL + compose exec）  
+- MySQL 8.4 clean-room：PASS（11 库双轮，专用项目已销毁）  
+- 本地 mvn / pnpm / Playwright / e2e / concurrency / 7 页面：PASS  
 
-## 9. 最终建议
+## 6. 本地安全复验（重写后）
 
-- **允许**作为本地 portfolio 冻结提交保留与演示。
-- **在完成历史密钥清理 + push 后 CI 全绿之前，不得标记为远端最终冻结版本。**
+| 检查 | 结果 |
+|---|---|
+| 跟踪文件 Gitleaks | **no leaks** |
+| 全历史 Gitleaks | 1 命中 = NACOS 文档占位（排除）；**真实旧 ISK = 0** |
+| 旧密钥特征搜索 | 0 |
+| `git status` | 干净（报告更新提交后） |
+| 最小业务 Smoke | e2e 19/19（轮换后） |
+
+## 7. 推送与远端 CI
+
+- 使用 `git push --force-with-lease origin main`（禁止裸 `--force`）。  
+- 推送前确认远端 `main` 仍为重写前已知 tip，无未知提交。  
+- Trivy：`exit-code: 0` + `continue-on-error: true` → **报告型，非阻断门禁**。  
+- 阻断门禁：backend `mvn verify`、frontend typecheck/test/build、Compose config、事件契约 Python 检查。  
+
+（推送与 CI 结果见第 8 节运行后回填。）
+
+## 8. 远端验证回填
+
+| 项 | 结果 |
+|---|---|
+| force-with-lease | （待填） |
+| 最终 `origin/main` SHA | （待填） |
+| GitHub Actions | （待填） |
+| 全新 clone Gitleaks / 大文件 / README·LICENSE·截图 | （待填） |
+
+## 9. 真实功能边界（仍成立）
+
+- 演示级电商闭环，非生产容量/合规认证。  
+- 支付为模拟；微信/支付宝未真实接入。  
+- 防超卖证据限于本地并发与当前实现。  
+- AI 依赖当前模型配置与内置知识，非全网事实保证。  
+
+## 10. 正式冻结声明
+
+**READY TO FREEZE**
+
+- 停止增加新业务功能。  
+- 仅接受：严重 Bug、安全问题、求职文案/截图修正。  
+- 本版本为求职展示冻结版。  
+
+本地历史 bundle 可在确认远端 clone 扫描通过且无回滚需求后删除；删除前请自行确认不再需要灾难恢复。
