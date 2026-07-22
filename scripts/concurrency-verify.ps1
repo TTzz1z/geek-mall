@@ -1,13 +1,61 @@
-# Concurrency: same Idempotency-Key + checkoutToken yields one order; order object authz
+param([string]$OutputJson)
+
+# Concurrency: same Idempotency-Key + checkoutToken yields one order; order object authz;
+# inventory/payment concurrency guarantees are verified by their real Maven tests.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
-$Base = 'http://127.0.0.1:8080'
+$Root = Split-Path -Parent $PSScriptRoot
+$Base = if ($env:E2E_BASE_URL) { $env:E2E_BASE_URL.TrimEnd('/') } else { 'http://127.0.0.1:8080' }
+if (-not $OutputJson) { $OutputJson = Join-Path $Root 'reports\concurrency-verify-result.json' }
 $results = @()
 
-function Pass($name, $ok, $detail) {
+function Record-Result($name, $ok, $detail) {
   $script:results += [pscustomobject]@{ item = $name; pass = [bool]$ok; detail = $detail }
   Write-Host ("[{0}] {1} :: {2}" -f ($(if ($ok) { 'PASS' } else { 'FAIL' })), $name, $detail)
 }
+
+function Complete-Run([int]$exitCode) {
+  $fail = @($script:results | Where-Object { -not $_.pass }).Count
+  $passN = @($script:results | Where-Object { $_.pass }).Count
+  $payload = [ordered]@{
+    script = 'concurrency-verify.ps1'
+    generatedAt = [DateTimeOffset]::Now.ToString('o')
+    summary = [ordered]@{ passed = $passN; failed = $fail; total = $script:results.Count }
+    results = @($script:results)
+  }
+  $parent = Split-Path -Parent $OutputJson
+  if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+  $payload | ConvertTo-Json -Depth 6 | Set-Content -Path $OutputJson -Encoding UTF8
+  Write-Host "SUMMARY pass=$passN fail=$fail total=$($script:results.Count)"
+  $script:results | Format-Table -AutoSize
+  Write-Host "JSON $OutputJson"
+  exit $exitCode
+}
+
+function Run-MavenTest($module, $testClass, $resultName) {
+  $maven = Get-Command mvn.cmd, mvn -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $maven) {
+    Record-Result $resultName $false "Maven executable not found; $testClass was not run"
+    return
+  }
+  Push-Location (Join-Path $Root 'backend')
+  try {
+    & $maven.Path -B -ntp -pl $module -am "-Dtest=$testClass" '-Dsurefire.failIfNoSpecifiedTests=false' test
+    $code = $LASTEXITCODE
+  } finally {
+    Pop-Location
+  }
+  Record-Result $resultName ($code -eq 0) "mavenExitCode=$code module=$module test=$testClass"
+}
+
+trap {
+  Record-Result 'script_unhandled_error' $false $_.Exception.Message
+  Complete-Run 1
+}
+
+# Run backend guarantees independently of API-stack availability.
+Run-MavenTest 'geek-inventory-fulfillment' 'InventoryReservationConcurrencyTest' 'inventory_concurrency_unit'
+Run-MavenTest 'geek-trade' 'PaymentCallbackIdempotencyTest' 'payment_callback_idempotent_unit'
 
 function Invoke($method, $path, $token, $body, $extraHeaders) {
   $c = [System.Net.Http.HttpClient]::new()
@@ -58,7 +106,7 @@ $preview = Invoke 'POST' '/api/v1/trade/checkout/preview' $token @{
   deliveryMethod = 'EXPRESS'
 } $null
 $checkoutToken = [string]$preview.json.data.checkoutToken
-Pass 'checkout_ready' ($preview.code -eq 200 -and $checkoutToken) ("code=$($preview.code) addressId=$addressId biz=$($preview.json.code)")
+Record-Result 'checkout_ready' ($preview.code -eq 200 -and $checkoutToken) ("code=$($preview.code) addressId=$addressId biz=$($preview.json.code)")
 
 $idemKey = 'conc-' + [guid]::NewGuid().ToString('N')
 $jobs = @()
@@ -89,17 +137,12 @@ foreach ($o in $outs) {
   } catch {}
 }
 $unique = @($orderNos | Select-Object -Unique).Count
-Pass 'checkout_token_idempotent' ($unique -eq 1 -and $okCodes -ge 1) ("ok=$okCodes uniqueOrders=$unique total=$($outs.Count)")
+$allFiveReplayed = ($outs.Count -eq 5 -and $okCodes -eq 5 -and $orderNos.Count -eq 5 -and $unique -eq 1)
+Record-Result 'checkout_token_idempotent' $allFiveReplayed ("ok=$okCodes orderNos=$($orderNos.Count) uniqueOrders=$unique total=$($outs.Count) expected=5")
 
 $other = Invoke 'GET' '/api/v1/trade/orders/GM-NOT-OWNED-999' $token $null $null
 $denied = ($other.code -eq 404 -or $other.code -eq 403 -or ($other.json.code -and $other.json.code -ne '0'))
-Pass 'order_object_authz' $denied ("code=$($other.code) biz=$($other.json.code)")
-
-Pass 'inventory_concurrency_unit' $true 'InventoryReservationConcurrencyTest (covered by mvn verify; not re-asserted here)'
-Pass 'payment_callback_idempotent_unit' $true 'PaymentCallbackIdempotencyTest (covered by mvn verify; not re-asserted here)'
+Record-Result 'order_object_authz' $denied ("code=$($other.code) biz=$($other.json.code)")
 
 $fail = @($results | Where-Object { -not $_.pass }).Count
-$passN = @($results | Where-Object { $_.pass }).Count
-Write-Host "SUMMARY pass=$passN fail=$fail"
-$results | Format-Table -AutoSize
-if ($fail -gt 0) { exit 1 }
+Complete-Run ($(if ($fail -gt 0) { 1 } else { 0 }))

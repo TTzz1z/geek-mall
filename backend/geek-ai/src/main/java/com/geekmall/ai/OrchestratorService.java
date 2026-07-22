@@ -166,8 +166,8 @@ public class OrchestratorService {
         Map<String, Object> memorySlots = ConversationSlots.fromContext(contextRoot);
 
         long userMsgId = DistributedId.next();
-        jdbc.update("INSERT INTO ai_message(id,conversation_id,role,content,token_count,created_at) VALUES(?,?,?,?,?,?)",
-                userMsgId, convId, "USER", message, Math.max(1, message.length() / 2), Timestamp.from(now));
+        jdbc.update("INSERT INTO ai_message(id,conversation_id,role,content,token_count,token_estimated,created_at) VALUES(?,?,?,?,?,?,?)",
+                userMsgId, convId, "USER", message, Math.max(1, message.length() / 2), true, Timestamp.from(now));
 
         ContextPacker.PackedContext packed = contextPacker.pack(convId, userMsgId, message, sceneHint, memorySlots);
 
@@ -246,15 +246,21 @@ public class OrchestratorService {
         // RAG only for knowledge/policy turns — GUIDE search results must not be mixed with unrelated PRODUCT_SPU citations.
         boolean wantRag = citations.isEmpty() && (agent.equals("PRODUCT_KNOWLEDGE") || agent.equals("AFTERSALE")
                 || containsAny(message, "参数", "保修", "规格", "说明书"));
+        boolean noEvidence = false;
         if (wantRag) {
             List<HybridRagService.Citation> retrieved = rag.retrieve(message, 3);
-            for (var c : retrieved) {
-                citations.add(c.asMap());
-                sink.emit(List.of(event("citation", c.asMap())));
+            if (retrieved.isEmpty()) {
+                noEvidence = true;
+                sink.emit(List.of(event("citation", Map.of("status", "NO_EVIDENCE", "message", "未检索到足够证据"))));
+            } else {
+                for (var c : retrieved) {
+                    citations.add(c.asMap());
+                    sink.emit(List.of(event("citation", c.asMap())));
+                }
             }
         }
 
-        String draft = composeAnswer(agent, message, toolResults, citations, confirmations);
+        String draft = composeAnswer(agent, message, toolResults, citations, confirmations, noEvidence);
         String answerSystem = """
                 你是极客商城受控助手。根据「工具结果摘要草稿」生成最终回复。
                 硬性规则：
@@ -262,6 +268,7 @@ public class OrchestratorService {
                 2) 不得宣称已支付、已退款或已提交订单。
                 3) 若草稿列出了检索候选，必须保留这些候选，不要改成只追问预算。
                 4) 若草稿说明未检索到商品，只允许澄清或换关键词建议，不得硬推无关品类。
+                5) 若草稿说明「未检索到足够证据」，必须保留该结论，禁止输出参数型结论。
                 语气可润色，事实必须 grounded。
                 """;
         String answerUser = "用户原话：" + message + "\n\n工具结果摘要草稿：\n" + draft;
@@ -280,10 +287,10 @@ public class OrchestratorService {
 
         long assistantMsgId = DistributedId.next();
         jdbc.update("""
-                INSERT INTO ai_message(id,conversation_id,role,content,token_count,model_name,agent_code,created_at)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO ai_message(id,conversation_id,role,content,token_count,token_estimated,model_name,agent_code,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
                 """, assistantMsgId, convId, "ASSISTANT", finalText, completion.completionTokens(),
-                completion.modelName(), agent, Timestamp.from(Instant.now()));
+                completion.tokenUsageEstimated(), completion.modelName(), agent, Timestamp.from(Instant.now()));
 
         for (Map<String, Object> c : citations) {
             jdbc.update("""
@@ -296,7 +303,7 @@ public class OrchestratorService {
         }
 
         return new TurnResult(assistantMsgId, agent, finalText, completion, toolResults, citations, confirmations,
-                degraded, plannerMode, fallbackReason, plannerMeta, turnSlots, replanMeta, grounded.usedDraft());
+                degraded, noEvidence, plannerMode, fallbackReason, plannerMeta, turnSlots, replanMeta, grounded.usedDraft());
     }
 
     private void executePlannedTools(List<PlanEnvelope.PlannedTool> planned,
@@ -585,7 +592,8 @@ public class OrchestratorService {
     }
 
     private String composeAnswer(String agent, String message, List<Map<String, Object>> toolResults,
-                                 List<Map<String, Object>> citations, List<Map<String, Object>> confirmations) {
+                                 List<Map<String, Object>> citations, List<Map<String, Object>> confirmations,
+                                 boolean noEvidence) {
         StringBuilder sb = new StringBuilder();
         sb.append("【智能体 ").append(agent).append("】\n");
 
@@ -642,7 +650,9 @@ public class OrchestratorService {
                     sb.append("引用：").append(citations.getFirst().get("documentTitle"))
                             .append(" / ").append(citations.getFirst().get("section")).append('\n');
                 } else {
-                    sb.append("暂无足够引用证据，建议查看商品详情页参数区。\n");
+                    sb.append(noEvidence
+                            ? "未检索到足够证据，无法给出参数结论；请查看商品详情页参数区或补充准确型号。\n"
+                            : "暂无线索可引用，建议查看商品详情页参数区。\n");
                 }
             }
             case "COMPARE" -> {
@@ -952,7 +962,7 @@ public class OrchestratorService {
 
     public record TurnResult(long messageId, String agent, String answer, ModelGateway.CompletionResult completion,
                              List<Map<String, Object>> toolResults, List<Map<String, Object>> citations,
-                             List<Map<String, Object>> confirmations, boolean degraded,
+                             List<Map<String, Object>> confirmations, boolean degraded, boolean noEvidence,
                              String plannerMode, String fallbackReason, Map<String, Object> planner,
                              Map<String, Object> slots, Map<String, Object> replan, boolean groundedUsedDraft) {
         Map<String, Object> completePayload() {
@@ -963,6 +973,7 @@ public class OrchestratorService {
             m.put("model", completion.asMap());
             m.put("tools", toolResults);
             m.put("citations", citations);
+            m.put("noEvidence", noEvidence);
             m.put("confirmations", confirmations);
             m.put("degraded", degraded);
             m.put("plannerMode", plannerMode == null ? "RULE" : plannerMode);

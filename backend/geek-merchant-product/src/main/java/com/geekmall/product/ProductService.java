@@ -6,6 +6,8 @@ import com.geekmall.common.api.BusinessException;
 import com.geekmall.common.domain.DistributedId;
 import com.geekmall.common.security.AuthPrincipal;
 import com.geekmall.common.security.TenantContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,6 +20,8 @@ import java.util.*;
 
 @Service
 class ProductService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ProductService.class);
+    private static final Set<String> DOCUMENT_CATEGORIES = Set.of("PRODUCT_SPEC");
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final DocumentStorageService storage;
@@ -517,9 +521,11 @@ class ProductService {
         } else {
             owner(spuId);
         }
-        String url = storage.uploadCover(spuId, file);
+        DocumentStorageService.StoredObject stored = storage.uploadCover(spuId, file);
+        String url = stored.reference();
         jdbc.update("UPDATE product_spu SET cover_url=?,updated_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=?", url, spuId);
         log(spuId, "COVER_UPDATED", principal.userId(), requestId);
+        uploadAudit(spuId, principal.userId(), "COVER", stored, requestId);
         String sale = jdbc.queryForObject("SELECT sale_status FROM product_spu WHERE id=?", String.class, spuId);
         if ("ON_SALE".equals(sale)) {
             event(spuId, "product.spu.on-sale.v1");
@@ -558,9 +564,10 @@ class ProductService {
     List<Map<String,Object>> subaccounts(){ return jdbc.queryForList("SELECT id,username,role_code AS roleCode,status,created_at AS createdAt FROM merchant_subaccount WHERE merchant_id=? ORDER BY created_at",TenantContext.requireMerchantId()); }
     long addSubaccount(ProductController.SubaccountRequest body,AuthPrincipal principal){ long id=DistributedId.next(); jdbc.update("INSERT INTO merchant_subaccount(id,merchant_id,shop_id,username,role_code,status,created_at) VALUES(?,?,?,?,?,'ENABLED',CURRENT_TIMESTAMP)",id,TenantContext.requireMerchantId(),principal.shopId(),body.username(),body.roleCode());return id; }
 
-    long addDocument(long spuId, ProductController.DocumentRequest body){ owner(spuId);long id=DistributedId.next();jdbc.update("INSERT INTO product_document(id,spu_id,doc_type,file_url,parse_status,created_at) VALUES(?,?,?,?,'PENDING',CURRENT_TIMESTAMP)",id,spuId,body.type(),body.fileUrl());return id;}
+    long addDocument(long spuId, ProductController.DocumentRequest body){ owner(spuId);String type=documentCategory(body.type());if(!storage.isPrivateDocumentReference(body.fileUrl()))throw new BusinessException("PD40012","商品资料必须使用站内私有对象地址");long id=DistributedId.next();jdbc.update("INSERT INTO product_document(id,spu_id,doc_type,file_url,parse_status,created_at) VALUES(?,?,?,?,'PENDING',CURRENT_TIMESTAMP)",id,spuId,type,body.fileUrl());return id;}
     @Transactional
-    Map<String,Object> uploadDocument(long spuId,String type,MultipartFile file){owner(spuId);String url=storage.upload(spuId,file);long id=DistributedId.next();jdbc.update("INSERT INTO product_document(id,spu_id,doc_type,file_url,parse_status,created_at) VALUES(?,?,?,?,'UPLOADED',CURRENT_TIMESTAMP)",id,spuId,type,url);return Map.of("id",id,"fileUrl",url,"fileName",Objects.requireNonNullElse(file.getOriginalFilename(),"document.bin"));}
+    Map<String,Object> uploadDocument(long spuId,String type,MultipartFile file,AuthPrincipal principal,String requestId){owner(spuId);String category=documentCategory(type);DocumentStorageService.StoredObject stored=storage.uploadDocument(spuId,file);long id=DistributedId.next();jdbc.update("INSERT INTO product_document(id,spu_id,doc_type,file_url,parse_status,created_at) VALUES(?,?,?,?,'UPLOADED',CURRENT_TIMESTAMP)",id,spuId,category,stored.reference());uploadAudit(spuId,principal.userId(),"DOCUMENT",stored,requestId);return Map.of("id",id,"fileUrl",stored.reference(),"fileName",stored.fileName(),"contentType",stored.contentType(),"size",stored.size());}
+    DocumentStorageService.DownloadedObject downloadDocument(long spuId,long documentId){owner(spuId);String reference=jdbc.query("SELECT file_url FROM product_document WHERE id=? AND spu_id=?",rs->rs.next()?rs.getString(1):null,documentId,spuId);if(reference==null)throw new BusinessException("PD40409","商品资料不存在");return storage.downloadDocument(reference);}
     List<Map<String,Object>> favorites(long userId){return jdbc.queryForList("SELECT p.id,p.title,p.subtitle,p.min_price AS minPrice,p.cover_url AS coverUrl,p.rating,f.created_at AS createdAt FROM member_favorite_product f JOIN product_spu p ON p.id=f.spu_id WHERE f.user_id=? AND p.sale_status='ON_SALE' ORDER BY f.created_at DESC",userId);}
     void favorite(long userId,long spuId){spu(spuId,null);jdbc.update("INSERT IGNORE INTO member_favorite_product(user_id,spu_id,created_at) VALUES(?,?,CURRENT_TIMESTAMP)",userId,spuId);}
     void unfavorite(long userId,long spuId){jdbc.update("DELETE FROM member_favorite_product WHERE user_id=? AND spu_id=?",userId,spuId);}
@@ -709,6 +716,8 @@ class ProductService {
     private void transition(long id,String field,Set<String> from,String to){String current=jdbc.queryForObject("SELECT "+field+" FROM product_spu WHERE id=?",String.class,id);if("audit_status".equals(field))ProductStateMachine.audit(current,to);else ProductStateMachine.sale(current,to);jdbc.update("UPDATE product_spu SET "+field+"=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",to,id);}
     private void audit(long id,long userId,String result,String reason){jdbc.update("INSERT INTO product_audit_record(id,spu_id,auditor_id,result,reason,created_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)",DistributedId.next(),id,userId,result,reason);}
     private void log(long id,String action,long userId,String requestId){jdbc.update("INSERT INTO product_operation_log(id,spu_id,action,operator_id,request_id,created_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)",DistributedId.next(),id,action,userId,requestId);}
+    private static String documentCategory(String value){String category=value==null?"":value.strip().toUpperCase(Locale.ROOT);if(!DOCUMENT_CATEGORIES.contains(category))throw new BusinessException("PD40013","商品资料类别仅支持 PRODUCT_SPEC");return category;}
+    private static void uploadAudit(long spuId,long uploaderId,String uploadKind,DocumentStorageService.StoredObject stored,String requestId){LOGGER.info("product_file_upload spu_id={} uploader_id={} upload_kind={} file_type={} file_size={} object_path={} request_id={}",spuId,uploaderId,uploadKind,stored.contentType(),stored.size(),stored.objectPath(),requestId);}
     private void event(long id,String type){String eventId=UUID.randomUUID().toString();Map<String,Object> product=searchDocument(id);Map<String,Object> envelope=Map.of("eventId",eventId,"eventType",type,"occurredAt",Instant.now().toString(),"producer","geek-merchant-product","aggregateId",String.valueOf(id),"version",1,"payload",product);jdbc.update("INSERT INTO event_outbox(id,event_id,aggregate_type,aggregate_id,event_type,payload_json,status,created_at) VALUES(?,?,?,?,?,?,'PENDING',CURRENT_TIMESTAMP)",DistributedId.next(),eventId,"PRODUCT_SPU",String.valueOf(id),type,json(envelope));}
     Map<String,Object> searchDocument(long id){
         Map<String,Object>d=one("SELECT p.id,p.title,p.subtitle,p.category_id AS categoryId,c.category_name AS categoryName,p.brand_id AS brandId,b.brand_name AS brandName,p.shop_id AS shopId,s.shop_name AS shopName,s.shop_type AS shopType,p.min_price AS minPrice,p.max_price AS maxPrice,p.cover_url AS coverUrl,p.sales_count AS salesCount,p.rating,p.source_type AS sourceType,p.audit_status AS auditStatus,p.sale_status AS saleStatus FROM product_spu p JOIN product_category c ON c.id=p.category_id JOIN product_brand b ON b.id=p.brand_id JOIN shop s ON s.id=p.shop_id WHERE p.id=?",id);

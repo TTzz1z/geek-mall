@@ -11,8 +11,10 @@ const route = useRoute()
 const session = useSessionStore()
 const isMerchant = computed(() => isMerchantWorkspace(session.principal))
 const isOrdersPage = computed(() => route.path === '/orders' || route.path === '/fulfillments')
+const isMerchantOrderPage = computed(() => route.path === '/orders' && isMerchant.value)
 const isAftersalePage = computed(() => route.path === '/aftersales')
 
+const merchantOrders = ref<any[]>([])
 const fulfillments = ref<any[]>([])
 const aftersales = ref<any[]>([])
 const loading = ref(false)
@@ -69,13 +71,25 @@ function statusTone(status?: string) {
   return 'neutral'
 }
 
+function orderItemSummary(items?: any[]) {
+  return (items || []).map((item: any) => `${item.title} × ${item.quantity}`).join('、') || '—'
+}
+
 const loadError = ref('')
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    if (isOrdersPage.value || !isAftersalePage.value) {
+    if (isMerchantOrderPage.value) {
+      try {
+        merchantOrders.value = await adminApi.request<any[]>('/api/v1/merchant/orders')
+      } catch (e) {
+        merchantOrders.value = []
+        loadError.value = e instanceof Error ? e.message : '商家订单加载失败'
+        ElMessage.error(loadError.value)
+      }
+    } else if (isOrdersPage.value || !isAftersalePage.value) {
       const path = isMerchant.value ? '/api/v1/merchant/fulfillments' : '/api/v1/admin/fulfillments'
       try {
         fulfillments.value = await adminApi.request<any[]>(path)
@@ -172,16 +186,36 @@ onMounted(load)
       </header>
       <el-alert v-if="loadError" type="error" :title="loadError" show-icon :closable="false" style="margin-bottom: 12px" />
 
-      <div class="fulfillment-section-head">
-        <h3>订单履约监控</h3>
+      <div v-if="isMerchantOrderPage" class="ops-card fulfillment-card">
+        <header class="fulfillment-card-head">
+          <h4>真实交易子订单</h4>
+          <span class="fulfillment-pending">{{ merchantOrders.length }} 单</span>
+        </header>
+        <el-table :data="merchantOrders" class="workspace-table" empty-text="暂无交易订单">
+          <el-table-column prop="subOrderNo" label="商家子订单" min-width="180" />
+          <el-table-column prop="orderNo" label="总订单" min-width="170" />
+          <el-table-column label="商品" min-width="220">
+            <template #default="{ row }">
+              {{ orderItemSummary(row.items) }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="payableAmount" label="实付金额" width="120" align="right" />
+          <el-table-column prop="status" label="状态" width="130" align="center" />
+          <el-table-column prop="createdAt" label="下单时间" min-width="170" />
+        </el-table>
       </div>
 
-      <div class="ops-card fulfillment-card">
-        <header class="fulfillment-card-head">
-          <h4>异常阻塞履约单</h4>
-          <span class="fulfillment-pending">{{ pendingCount }} 待处理</span>
-        </header>
-        <el-table :data="blocked" class="workspace-table" empty-text="暂无异常阻塞履约单">
+      <template v-else>
+        <div class="fulfillment-section-head">
+          <h3>订单履约监控</h3>
+        </div>
+
+        <div class="ops-card fulfillment-card">
+          <header class="fulfillment-card-head">
+            <h4>异常阻塞履约单</h4>
+            <span class="fulfillment-pending">{{ pendingCount }} 待处理</span>
+          </header>
+          <el-table :data="blocked" class="workspace-table" empty-text="暂无异常阻塞履约单">
           <el-table-column label="履约单号" min-width="160">
             <template #default="{ row }">
               <span class="mono">{{ row.fulfillmentNo }}</span>
@@ -205,8 +239,9 @@ onMounted(load)
               <button type="button" class="fulfillment-intervene" @click="openIntervene(row)">强制拆单发货</button>
             </template>
           </el-table-column>
-        </el-table>
-      </div>
+          </el-table>
+        </div>
+      </template>
     </template>
 
     <template v-else>

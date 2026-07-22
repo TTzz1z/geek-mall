@@ -19,9 +19,10 @@ function Sql($db, $q) {
   }
 }
 
-$tradeOrders = [int](Sql 'geek_trade' 'SELECT COUNT(*) FROM trade_order;')
-$demoOrders = [int](Sql 'geek_system' 'SELECT COUNT(*) FROM demo_merchant_order;')
-Pass 'trade_order_table_exists' ($tradeOrders -ge 0) ("trade_order=$tradeOrders demo_merchant_order=$demoOrders")
+$tradeTables = [int](Sql 'geek_trade' "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='geek_trade' AND table_name IN ('trade_order','trade_sub_order','trade_order_item');")
+$legacyOrderTables = [int](Sql 'geek_system' "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='geek_system' AND table_name='demo_merchant_order';")
+Pass 'authoritative_trade_order_tables_exist' ($tradeTables -eq 3) ("tradeTables=$tradeTables expected=3")
+Pass 'legacy_merchant_order_table_removed' ($legacyOrderTables -eq 0) ("legacyTables=$legacyOrderTables expected=0")
 
 $orphanProfiles = [int](Sql 'geek_member' 'SELECT COUNT(*) FROM member_profile WHERE user_id IN (1001,1002);')
 Pass 'orphan_profiles_documented' ($orphanProfiles -ge 0) ("legacyOrphans=$orphanProfiles (1001/1002 expected)")

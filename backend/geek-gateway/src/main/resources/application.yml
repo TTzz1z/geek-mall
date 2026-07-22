@@ -8,8 +8,8 @@ spring:
     nacos:
       discovery:
         server-addr: ${NACOS_ADDR:localhost:8848}
-        username: ${NACOS_USER:nacos}
-        password: ${NACOS_PASSWORD:nacos}
+        username: ${NACOS_USER:CHANGE_ME_NACOS_USER}
+        password: ${NACOS_PASSWORD:CHANGE_ME_NACOS_PASSWORD}
     gateway:
       default-filters:
         - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
@@ -24,7 +24,7 @@ spring:
         - id: trade
           uri: ${TRADE_SERVICE_URI:http://localhost:9005}
           predicates:
-            - Path=/api/v1/trade/**,/api/v1/payments/**,/api/v1/admin/trade/**
+            - Path=/api/v1/trade/**,/api/v1/payments/**,/api/v1/merchant/orders/**,/api/v1/admin/trade/**
         - id: member
           uri: ${MEMBER_SERVICE_URI:http://localhost:9006}
           predicates:
@@ -68,7 +68,7 @@ spring:
         - id: auth-system
           uri: ${AUTH_SERVICE_URI:http://localhost:9001}
           predicates:
-            - Path=/api/v1/auth/**,/api/v1/admin/menus,/api/v1/admin/menus/**,/api/v1/admin/users/**,/api/v1/admin/roles/**,/api/v1/admin/audit-logs,/api/v1/merchant/demo/orders,/v3/api-docs/**,/swagger-ui/**
+            - Path=/api/v1/auth/**,/api/v1/admin/menus,/api/v1/admin/menus/**,/api/v1/admin/users/**,/api/v1/admin/roles/**,/api/v1/admin/audit-logs,/v3/api-docs/**,/swagger-ui/**
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -76,7 +76,7 @@ spring:
 
 geek:
   auth:
-    jwt-secret: ${JWT_SECRET:change-this-local-secret-at-least-32-bytes-long}
+    jwt-secret: ${JWT_SECRET:CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
     issuer: geek-mall
 
 management:

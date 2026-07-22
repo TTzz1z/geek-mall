@@ -29,6 +29,19 @@ const canCreateProduct = computed(() =>
 )
 const pageTitle = computed(() => (isOpsSelfOp.value ? '我的商品' : '商品中心'))
 
+const COVER_MAX_BYTES = 5 * 1024 * 1024
+const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
+const coverTypes: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp'
+}
+const documentTypes: Record<string, string> = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  txt: 'text/plain'
+}
+const dangerousSuffix = /\.(?:exe|dll|bat|cmd|com|cpl|hta|html?|jar|js|jsp|msi|php|ps1|py|scr|sh|svg|vbs)(?:\.|$)/i
+
 const adminTab = ref<'all' | 'pending'>('all')
 const saleFilter = ref<'ALL' | 'ON_SALE' | 'OFF_SALE'>('ALL')
 const items = ref<any[]>([])
@@ -227,6 +240,41 @@ async function uploadCoverFile(spuId: number, file: File) {
   return result.coverUrl
 }
 
+function extensionOf(file: File) {
+  const dot = file.name.lastIndexOf('.')
+  return dot < 0 ? '' : file.name.slice(dot + 1).toLowerCase()
+}
+
+function unsafeFileName(file: File) {
+  return !file.name || file.name.includes('/') || file.name.includes('\\') || file.name.includes('..')
+    || dangerousSuffix.test(file.name)
+}
+
+async function coverValidationError(file: File): Promise<string | null> {
+  if (unsafeFileName(file)) return '封面文件名不安全，请重命名后上传'
+  if (file.size > COVER_MAX_BYTES) return '商品封面不能超过 5MB'
+  const extension = extensionOf(file)
+  if (!coverTypes[extension]) return '商品封面仅支持 JPEG、PNG、WebP（不支持 GIF、SVG）'
+  if (file.type.toLowerCase() !== coverTypes[extension]) return '封面扩展名与 Content-Type 不一致'
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer())
+  const ascii = (offset: number, value: string) => [...value].every((char, index) => bytes[offset + index] === char.charCodeAt(0))
+  const magicMatches = extension === 'jpg' || extension === 'jpeg'
+    ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+    : extension === 'png'
+      ? [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => bytes[index] === value)
+      : ascii(0, 'RIFF') && ascii(8, 'WEBP')
+  return magicMatches ? null : '封面内容与声明的图片类型不一致'
+}
+
+function documentValidationError(file: File): string | null {
+  if (unsafeFileName(file)) return '资料文件名不安全，请重命名后上传'
+  if (file.size > DOCUMENT_MAX_BYTES) return '商品资料不能超过 10MB'
+  const extension = extensionOf(file)
+  if (!documentTypes[extension]) return '商品资料仅支持 PDF、DOCX、XLSX、TXT'
+  if (file.type.toLowerCase() !== documentTypes[extension]) return '资料扩展名与 Content-Type 不一致'
+  return null
+}
+
 async function save() {
   if (!form.title || !form.skuCode) {
     ElMessage.warning('请填写标题和 SKU 编码')
@@ -367,6 +415,11 @@ async function adminOffSaleAll() {
 }
 
 async function uploadDocument(id: number, options: { file: File }) {
+  const validationError = documentValidationError(options.file)
+  if (validationError) {
+    ElMessage.error(validationError)
+    return
+  }
   const body = new FormData()
   body.append('type', 'PRODUCT_SPEC')
   body.append('file', options.file)
@@ -381,8 +434,9 @@ async function uploadDocument(id: number, options: { file: File }) {
 async function uploadCoverInDialog(options: UploadRequestOptions) {
   const file = options.file as File
   if (!file) return
-  if (!file.type.startsWith('image/')) {
-    ElMessage.warning('请选择图片文件')
+  const validationError = await coverValidationError(file)
+  if (validationError) {
+    ElMessage.error(validationError)
     return
   }
   coverUploading.value = true
@@ -529,7 +583,7 @@ onMounted(() => { load(); meta() })
                 <el-upload
                   class="cover-upload"
                   :show-file-list="false"
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"
+                  accept=".pdf,.docx,.xlsx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
                   :http-request="(opt: UploadRequestOptions) => uploadDocument(row.id, { file: opt.file as File })"
                 >
                   <el-button type="primary" link>上传资料</el-button>
@@ -590,7 +644,7 @@ onMounted(() => { load(); meta() })
                 class="cover-uploader"
                 :show-file-list="false"
                 :disabled="coverUploading"
-                accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
                 :http-request="uploadCoverInDialog"
               >
                 <img v-if="displayCover" class="cover-preview" :src="displayCover" alt="cover" />
@@ -610,7 +664,7 @@ onMounted(() => { load(); meta() })
                 <Trash :size="14" />
                 移除
               </el-button>
-              <small class="cover-hint">支持 jpg / png / webp；新建时选图后点「保存草稿」即可自动上传</small>
+              <small class="cover-hint">支持 JPEG / PNG / WebP，最大 5MB；新建时选图后点「保存草稿」即可自动上传</small>
             </div>
           </el-form-item>
 

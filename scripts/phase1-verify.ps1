@@ -419,10 +419,8 @@ $pointsOk = ("$snapPoints" -match '\t4900\t|\s4900\s')
 Pass 'consistency_snapshot_ok' ([bool]$snapOrder -and [bool]$snapAs -and [bool]$snapRf -and $ffShipped -and $couponUsed -and [bool]$snapStock) ("ffShipped=$ffShipped couponUsed=$couponUsed points=$snapPoints stock=$snapStock")
 
 Log '== Known gaps (explicit) =='
-Log 'EXCHANGE restock fulfillment: NOT DONE'
-Log 'Carrier real callback: NOT DONE'
-Pass 'gap_exchange_restock_documented' $true 'OUT_OF_SCOPE'
-Pass 'gap_carrier_callback_documented' $true 'OUT_OF_SCOPE'
+Log '[NOT AUTOMATED] EXCHANGE restock fulfillment'
+Log '[NOT AUTOMATED] Carrier real callback'
 
 $fail = @($results | Where-Object { -not $_.pass }).Count
 $passN = @($results | Where-Object { $_.pass }).Count

@@ -10,8 +10,13 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -42,7 +47,8 @@ class ProductController {
     @PostMapping("/merchant/products/spus/{spuId}/on-sale") @PreAuthorize("hasAnyRole('MERCHANT','PRODUCT_ADMIN','OPS')") ApiResponse<Void> onSale(@PathVariable long spuId,@AuthenticationPrincipal AuthPrincipal p,HttpServletRequest r){service.onSale(spuId,p,id(r));return ok(null,r);}
     @PostMapping("/merchant/products/spus/{spuId}/off-sale") @PreAuthorize("hasAnyRole('MERCHANT','PRODUCT_ADMIN','OPS')") ApiResponse<Void> offSale(@PathVariable long spuId,@AuthenticationPrincipal AuthPrincipal p,HttpServletRequest r){service.offSale(spuId,p,id(r));return ok(null,r);}
     @PostMapping("/merchant/products/{spuId}/documents") @PreAuthorize("hasAnyRole('MERCHANT','PRODUCT_ADMIN','OPS')") ApiResponse<Map<String,Long>> document(@PathVariable long spuId,@Valid @RequestBody DocumentRequest b,HttpServletRequest r){return ok(Map.of("id",service.addDocument(spuId,b)),r);}
-    @PostMapping(value="/merchant/products/{spuId}/documents/upload",consumes="multipart/form-data") @PreAuthorize("hasAnyRole('MERCHANT','PRODUCT_ADMIN','OPS')") ApiResponse<Map<String,Object>> uploadDocument(@PathVariable long spuId,@RequestParam String type,@RequestPart MultipartFile file,HttpServletRequest r){return ok(service.uploadDocument(spuId,type,file),r);}
+    @PostMapping(value="/merchant/products/{spuId}/documents/upload",consumes="multipart/form-data") @PreAuthorize("hasAnyRole('MERCHANT','PRODUCT_ADMIN','OPS')") ApiResponse<Map<String,Object>> uploadDocument(@PathVariable long spuId,@RequestParam String type,@RequestPart MultipartFile file,@AuthenticationPrincipal AuthPrincipal p,HttpServletRequest r){return ok(service.uploadDocument(spuId,type,file,p,id(r)),r);}
+    @GetMapping("/merchant/products/{spuId}/documents/{documentId}/download") @PreAuthorize("hasAnyRole('MERCHANT','PRODUCT_ADMIN','OPS')") ResponseEntity<byte[]> downloadDocument(@PathVariable long spuId,@PathVariable long documentId){var document=service.downloadDocument(spuId,documentId);return ResponseEntity.ok().header(HttpHeaders.CONTENT_DISPOSITION,ContentDisposition.attachment().filename(document.fileName(),StandardCharsets.UTF_8).build().toString()).contentType(MediaType.parseMediaType(document.contentType())).contentLength(document.content().length).body(document.content());}
     @PostMapping(value="/merchant/products/{spuId}/cover",consumes="multipart/form-data") @PreAuthorize("hasAnyRole('MERCHANT','PRODUCT_ADMIN','OPS')") ApiResponse<Map<String,Object>> merchantCover(@PathVariable long spuId,@RequestPart MultipartFile file,@AuthenticationPrincipal AuthPrincipal p,HttpServletRequest r){return ok(service.uploadCover(spuId,file,p,id(r),false),r);}
     @GetMapping("/admin/products/spus/pending") @PreAuthorize("hasAnyRole('SYSTEM_ADMIN','PRODUCT_ADMIN')") ApiResponse<List<Map<String,Object>>> pending(HttpServletRequest r){return ok(service.pendingProducts(),r);}
     @GetMapping("/admin/products/spus") @PreAuthorize("hasAnyRole('SYSTEM_ADMIN','PRODUCT_ADMIN')") ApiResponse<List<Map<String,Object>>> adminProducts(@RequestParam(required=false) String saleStatus,HttpServletRequest r){return ok(service.adminProducts(saleStatus),r);}

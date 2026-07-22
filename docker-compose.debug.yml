@@ -1,0 +1,16 @@
+# Local debugging only. Do not use this file for shared, staging, or public demos.
+# Every mapping is loopback-only so Docker cannot publish middleware on a LAN/WAN
+# interface. Run with: docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d
+services:
+  mysql:
+    ports: ["127.0.0.1:13306:3306"]
+  redis:
+    ports: ["127.0.0.1:16379:6379"]
+  rabbitmq:
+    ports: ["127.0.0.1:15672:5672", "127.0.0.1:25672:15672"]
+  elasticsearch:
+    ports: ["127.0.0.1:19200:9200"]
+  minio:
+    ports: ["127.0.0.1:19100:9000", "127.0.0.1:19101:9001"]
+  nacos:
+    ports: ["127.0.0.1:18848:8848", "127.0.0.1:19848:9848"]

@@ -64,6 +64,8 @@ class PaymentCallbackIdempotencyTest {
         assertThat(first.get("idempotentReplay")).isEqualTo(false);
         assertThat(duplicate.get("idempotentReplay")).isEqualTo(true);
         assertThat(jdbc.queryForObject("SELECT status FROM trade_order WHERE id=1", String.class)).isEqualTo("PAID");
+        assertThat(jdbc.queryForObject("SELECT status FROM trade_payment WHERE id=2", String.class)).isEqualTo("SUCCESS");
+        assertThat(jdbc.queryForObject("SELECT process_status FROM trade_payment_callback", String.class)).isEqualTo("SUCCESS");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trade_payment_callback", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM event_outbox WHERE event_type='payment.payment.succeeded.v1'", Integer.class)).isEqualTo(1);
         verify(inventory, times(1)).deduct("GM1");

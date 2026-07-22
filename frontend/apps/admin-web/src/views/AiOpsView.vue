@@ -93,7 +93,8 @@ function showTrace(row: any) {
       `模型：${row.modelName || '—'}`,
       `耗时：${fmtLatency(row.latencyMs)} ms`,
       `状态：${row.status || '—'}`,
-      `成本：$${fmtCost(row.cost)}`,
+      `估算成本：$${fmtCost(row.estimatedCost ?? row.cost)}`,
+      `Token 来源：${row.tokenUsageSource === 'PROVIDER_USAGE' ? '上游 usage' : '估算'}`,
       `时间：${row.createdAt || '—'}`,
       '',
       String(row.detail || '无详情')
@@ -151,14 +152,14 @@ onMounted(load)
       </article>
       <article>
         <small>预估总成本 ($)</small>
-        <strong class="mono">{{ fmtCost(metrics.costTotal) }}</strong>
+        <strong class="mono">{{ fmtCost(metrics.estimatedCostTotal ?? metrics.costTotal) }}</strong>
       </article>
       <article>
-        <small>Planner 成本 ($)</small>
-        <strong class="mono">{{ fmtCost(metrics.planCost) }}</strong>
+        <small>Planner 估算成本 ($)</small>
+        <strong class="mono">{{ fmtCost(metrics.estimatedPlanCost ?? metrics.planCost) }}</strong>
       </article>
       <article>
-        <small>Token（prompt+comp）</small>
+        <small>Token（真实 usage 优先 / 缺失时估算）</small>
         <strong class="mono">{{ fmtNum(Number(metrics.promptTokens || 0) + Number(metrics.completionTokens || 0)) }}</strong>
       </article>
       <article>
@@ -193,9 +194,9 @@ onMounted(load)
             <span class="ai-model" :class="`tone-${modelTone(row.modelName)}`">{{ row.modelName || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="Tokens" width="110" align="right">
+        <el-table-column label="Token（真实/估算）" width="140" align="right">
           <template #default="{ row }">
-            <span class="mono">{{ fmtNum(Number(row.promptTokens || 0) + Number(row.completionTokens || 0)) }}</span>
+            <span class="mono">{{ fmtNum(Number(row.promptTokens || 0) + Number(row.completionTokens || 0)) }} {{ row.tokenUsageEstimated ? '估算' : '真实' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="耗时 (ms)" width="110" align="right">
@@ -219,7 +220,7 @@ onMounted(load)
         </el-table-column>
         <el-table-column label="预估成本 ($)" width="120" align="right">
           <template #default="{ row }">
-            <span class="mono">{{ fmtCost(row.cost) }}</span>
+            <span class="mono">{{ fmtCost(row.estimatedCost ?? row.cost) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="时间" width="100">

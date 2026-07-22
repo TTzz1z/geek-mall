@@ -56,14 +56,23 @@ try {
       if ($msg.data.model -and $msg.data.model.modelName) { $model = [string]$msg.data.model.modelName }
       Pass 'ai_message' ([bool]$reply) ("model=$model degraded=$degraded len=$($reply.Length)")
       $hasKey = $false
+      $llmEnabled = $true
       if (Test-Path "$Root\.env") {
         $envRaw = Get-Content "$Root\.env" -Raw
-        $hasKey = $envRaw -match 'LLM_API_KEY=sk-'
+        $keyMatch = [regex]::Match($envRaw, '(?m)^\s*LLM_API_KEY\s*=\s*([^\r\n#]+)')
+        if ($keyMatch.Success) {
+          $keyValue = $keyMatch.Groups[1].Value.Trim().Trim('"').Trim("'")
+          $hasKey = (-not [string]::IsNullOrWhiteSpace($keyValue) -and $keyValue -notmatch 'CHANGE_ME|YOUR_|example|placeholder')
+        }
+        $enabledMatch = [regex]::Match($envRaw, '(?m)^\s*LLM_ENABLED\s*=\s*([^\r\n#]+)')
+        if ($enabledMatch.Success) { $llmEnabled = $enabledMatch.Groups[1].Value.Trim() -ne 'false' }
       }
-      if ($hasKey) {
-        Pass 'llm_not_local_fallback' (-not ($reply -match '\[模型回复·本地降级\]')) 'DeepSeek path preferred when key set'
+      if ($hasKey -and $llmEnabled) {
+        $remoteOk = (-not $degraded -and $msg.data.model.degraded -eq $false -and [string]$msg.data.plannerMode -eq 'LLM')
+        Pass 'llm_remote_model' $remoteOk ("model=$model degraded=$degraded planner=$($msg.data.plannerMode)")
       } else {
-        Pass 'llm_key_optional' $true 'no LLM_API_KEY in .env; skip remote assert'
+        $fallbackOk = ($degraded -and $msg.data.model.degraded -eq $true -and [string]$msg.data.plannerMode -eq 'RULE' -and [string]$msg.data.fallbackReason -eq 'LLM_DISABLED')
+        Pass 'llm_local_fallback' $fallbackOk ("model=$model degraded=$degraded planner=$($msg.data.plannerMode) reason=$($msg.data.fallbackReason)")
       }
     }
   }

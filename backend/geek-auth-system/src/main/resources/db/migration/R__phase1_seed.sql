@@ -105,8 +105,3 @@ INSERT INTO sys_role_menu(role_id,menu_id) SELECT 10,630 WHERE NOT EXISTS(SELECT
 INSERT INTO sys_role_menu(role_id,menu_id) SELECT 16,620 WHERE NOT EXISTS(SELECT 1 FROM sys_role_menu WHERE role_id=16 AND menu_id=620);
 INSERT INTO sys_role_menu(role_id,menu_id) SELECT 16,630 WHERE NOT EXISTS(SELECT 1 FROM sys_role_menu WHERE role_id=16 AND menu_id=630);
 INSERT INTO sys_role_menu(role_id,menu_id) SELECT 15,630 WHERE NOT EXISTS(SELECT 1 FROM sys_role_menu WHERE role_id=15 AND menu_id=630);
-
-INSERT INTO demo_merchant_order(id,order_no,merchant_id,shop_id,title,amount,status,created_at,updated_at)
-SELECT 1,'GM202607150001',2001,3001,'极客本 14 Pro',6999.00,'PAID',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP WHERE NOT EXISTS(SELECT 1 FROM demo_merchant_order WHERE id=1);
-INSERT INTO demo_merchant_order(id,order_no,merchant_id,shop_id,title,amount,status,created_at,updated_at)
-SELECT 2,'GM202607150002',2002,3002,'极客屏 32 MiniLED',4299.00,'SHIPPED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP WHERE NOT EXISTS(SELECT 1 FROM demo_merchant_order WHERE id=2);

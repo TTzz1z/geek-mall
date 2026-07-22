@@ -1,14 +1,61 @@
 name: geek-mall
+
+x-security-check-depends: &security_check_depends
+  security-config-check:
+    condition: service_completed_successfully
+
 services:
+  # This one-shot guard makes it impossible to accidentally use the repository
+  # placeholders in a shared environment. Local demos are allowed, but noisy.
+  security-config-check:
+    image: alpine:3.20
+    environment:
+      GEEK_SHARED_ENVIRONMENT: ${GEEK_SHARED_ENVIRONMENT:-false}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-CHANGE_ME_MYSQL_ROOT_PASSWORD}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
+      PAYMENT_CALLBACK_SECRET: ${PAYMENT_CALLBACK_SECRET:-CHANGE_ME_PAYMENT_CALLBACK_SECRET}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-CHANGE_ME_MINIO_SECRET_KEY}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-CHANGE_ME_MINIO_ACCESS_KEY}
+      NACOS_USER: ${NACOS_USER:-CHANGE_ME_NACOS_USER}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-CHANGE_ME_NACOS_PASSWORD}
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-CHANGE_ME_NACOS_AUTH_TOKEN}
+      NACOS_AUTH_ENABLE: ${NACOS_AUTH_ENABLE:-false}
+      NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-CHANGE_ME_NACOS_IDENTITY_KEY}
+      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:-CHANGE_ME_NACOS_IDENTITY_VALUE}
+      GRAFANA_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-CHANGE_ME_GRAFANA_ADMIN_PASSWORD}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        invalid=''
+        for key in MYSQL_ROOT_PASSWORD MYSQL_PASSWORD JWT_SECRET INTERNAL_SERVICE_KEY PAYMENT_CALLBACK_SECRET RABBITMQ_PASSWORD MINIO_ACCESS_KEY MINIO_SECRET_KEY NACOS_USER NACOS_PASSWORD NACOS_AUTH_TOKEN NACOS_AUTH_IDENTITY_KEY NACOS_AUTH_IDENTITY_VALUE GRAFANA_ADMIN_PASSWORD; do
+          value="$$(printenv "$$key")"
+          case "$$value" in
+            ''|CHANGE_ME_*|change-*|geek_local_password|geek-isk-*|nacos|VGhpc0lzQVNlY3VyZUxvY2FsVG9rZW5Gb3JHZWVrTWFsbE5hY29z)
+              invalid="$$invalid $$key" ;;
+          esac
+        done
+        [ "$$NACOS_AUTH_ENABLE" = 'false' ] && invalid="$$invalid NACOS_AUTH_ENABLE"
+        if [ -n "$$invalid" ]; then
+          if [ "$$GEEK_SHARED_ENVIRONMENT" = 'true' ]; then
+            echo "ERROR: refusing shared startup with placeholder/insecure configuration:$$invalid" >&2
+            exit 1
+          fi
+          echo "WARNING: local-only startup uses placeholder/insecure configuration:$$invalid" >&2
+        fi
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-root-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-CHANGE_ME_MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-geek_system}
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       TZ: Asia/Shanghai
-    ports: ["3306:3306"]
+    expose: ["3306"]
+    depends_on: *security_check_depends
     volumes:
       - mysql-data:/var/lib/mysql
       - ./deploy/mysql/init-databases.sql:/docker-entrypoint-initdb.d/01-geek-databases.sql:ro
@@ -20,7 +67,8 @@ services:
   redis:
     image: redis:7.4-alpine
     command: ["redis-server", "--appendonly", "yes"]
-    ports: ["6379:6379"]
+    expose: ["6379"]
+    depends_on: *security_check_depends
     volumes: ["redis-data:/data"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -31,8 +79,9 @@ services:
     image: rabbitmq:4.0-management-alpine
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-geek_local_password}
-    ports: ["5672:5672", "15672:15672"]
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
+    expose: ["5672", "15672"]
+    depends_on: *security_check_depends
     volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
@@ -45,7 +94,8 @@ services:
       discovery.type: single-node
       xpack.security.enabled: "false"
       ES_JAVA_OPTS: -Xms512m -Xmx512m
-    ports: ["9200:9200"]
+    expose: ["9200"]
+    depends_on: *security_check_depends
     volumes: ["elasticsearch-data:/usr/share/elasticsearch/data"]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health?wait_for_status=yellow || exit 1"]
@@ -56,9 +106,10 @@ services:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-geek}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-geek_local_password}
-    ports: ["9100:9000", "9101:9001"]
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-CHANGE_ME_MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-CHANGE_ME_MINIO_SECRET_KEY}
+    expose: ["9000", "9001"]
+    depends_on: *security_check_depends
     volumes: ["minio-data:/data"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
@@ -69,13 +120,13 @@ services:
     image: nacos/nacos-server:v2.4.3
     environment:
       MODE: standalone
-      # Local phase-1 baseline: keep Nacos isolated on the Compose network and
-      # disable its own account bootstrap. Production must override this.
-      NACOS_AUTH_ENABLE: "false"
-      NACOS_AUTH_IDENTITY_KEY: geekmall
-      NACOS_AUTH_IDENTITY_VALUE: geekmall-local
-      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-VGhpc0lzQVNlY3VyZUxvY2FsVG9rZW5Gb3JHZWVrTWFsbE5hY29z}
-    ports: ["8848:8848", "9848:9848"]
+      # Local-only default. Shared deployments must set auth and non-placeholder credentials.
+      NACOS_AUTH_ENABLE: ${NACOS_AUTH_ENABLE:-false}
+      NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-CHANGE_ME_NACOS_IDENTITY_KEY}
+      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:-CHANGE_ME_NACOS_IDENTITY_VALUE}
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-CHANGE_ME_NACOS_AUTH_TOKEN}
+    expose: ["8848", "9848"]
+    depends_on: *security_check_depends
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8848/nacos/actuator/health || exit 1"]
       interval: 15s
@@ -86,12 +137,13 @@ services:
     environment:
       MYSQL_URL: jdbc:mysql://mysql:3306/geek_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       REDIS_HOST: redis
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9001:9001"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9001"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
       nacos: { condition: service_healthy }
@@ -116,10 +168,11 @@ services:
       AI_SERVICE_URI: ${AI_SERVICE_URI:-http://ai:9011}
       REDIS_HOST: redis
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:*,http://127.0.0.1:*}
-    ports: ["8080:8080"]
+    expose: ["8080"]
     depends_on:
+      <<: *security_check_depends
       auth-system: { condition: service_healthy }
       merchant-product: { condition: service_healthy }
       inventory-fulfillment: { condition: service_healthy }
@@ -141,21 +194,22 @@ services:
     environment:
       PRODUCT_MYSQL_URL: jdbc:mysql://mysql:3306/geek_merchant_product?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai:9011}
       MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-geek}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-geek_local_password}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-CHANGE_ME_MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-CHANGE_ME_MINIO_SECRET_KEY}
       MINIO_BUCKET: ${MINIO_BUCKET:-geek-product-documents}
       MINIO_PUBLIC_BASE_URL: ${MINIO_PUBLIC_BASE_URL:-http://127.0.0.1:9100}
-    ports: ["9002:9002"]
+    expose: ["9002"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       minio: { condition: service_healthy }
@@ -170,17 +224,18 @@ services:
     environment:
       INVENTORY_MYSQL_URL: jdbc:mysql://mysql:3306/geek_inventory?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       AFTERSALE_SERVICE_URL: http://aftersale:9008
       TRADE_SERVICE_URL: http://trade:9005
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9003:9003"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9003"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       nacos: { condition: service_healthy }
@@ -194,23 +249,24 @@ services:
     environment:
       TRADE_MYSQL_URL: jdbc:mysql://mysql:3306/geek_trade?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       PRODUCT_SERVICE_URL: http://merchant-product:9002
       INVENTORY_SERVICE_URL: http://inventory-fulfillment:9003
       MARKETING_SERVICE_URL: http://marketing:9007
       MEMBER_SERVICE_URL: http://member:9006
       SETTLEMENT_SERVICE_URL: http://settlement:9010
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
-      PAYMENT_CALLBACK_SECRET: ${PAYMENT_CALLBACK_SECRET:-change-payment-callback-secret}
+      PAYMENT_CALLBACK_SECRET: ${PAYMENT_CALLBACK_SECRET:-CHANGE_ME_PAYMENT_CALLBACK_SECRET}
       PAYMENT_WECHAT_ENABLED: ${PAYMENT_WECHAT_ENABLED:-false}
       PAYMENT_ALIPAY_ENABLED: ${PAYMENT_ALIPAY_ENABLED:-false}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9005:9005"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9005"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       merchant-product: { condition: service_healthy }
@@ -227,19 +283,20 @@ services:
     environment:
       MEMBER_MYSQL_URL: jdbc:mysql://mysql:3306/geek_member?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       SPRING_RABBITMQ_HOST: rabbitmq
       SPRING_RABBITMQ_PORT: 5672
       SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-geek}
-      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
-    ports: ["9006:9006"]
+    expose: ["9006"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       nacos: { condition: service_healthy }
@@ -253,15 +310,17 @@ services:
     environment:
       MARKETING_MYSQL_URL: jdbc:mysql://mysql:3306/geek_marketing?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       REDIS_HOST: redis
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9007:9007"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9007"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
@@ -276,13 +335,14 @@ services:
     environment:
       AFTERSALE_MYSQL_URL: jdbc:mysql://mysql:3306/geek_aftersale?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       TRADE_SERVICE_URL: http://trade:9005
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9008:9008"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9008"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       trade: { condition: service_healthy }
       nacos: { condition: service_healthy }
@@ -296,15 +356,16 @@ services:
     environment:
       SERVICE_MYSQL_URL: jdbc:mysql://mysql:3306/geek_service?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9009:9009"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9009"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       nacos: { condition: service_healthy }
@@ -318,15 +379,16 @@ services:
     environment:
       SETTLEMENT_MYSQL_URL: jdbc:mysql://mysql:3306/geek_settlement?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9010:9010"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9010"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       nacos: { condition: service_healthy }
@@ -340,17 +402,18 @@ services:
     environment:
       SEARCH_MYSQL_URL: jdbc:mysql://mysql:3306/geek_search?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-geek_local_password}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
       ELASTICSEARCH_URL: http://elasticsearch:9200
       PRODUCT_SERVICE_URL: http://merchant-product:9002
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9004:9004"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9004"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       elasticsearch: { condition: service_healthy }
@@ -367,7 +430,7 @@ services:
     environment:
       AI_MYSQL_URL: jdbc:mysql://mysql:3306/geek_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       MYSQL_USER: ${MYSQL_USER:-geek}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-geek_local_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       ELASTICSEARCH_URL: http://elasticsearch:9200
       PRODUCT_SERVICE_URL: http://merchant-product:9002
       TRADE_SERVICE_URL: http://trade:9005
@@ -383,9 +446,10 @@ services:
       AI_MODEL_FALLBACK: ${AI_MODEL_FALLBACK:-geek-chat-fallback}
       AI_MODEL_FAIL_PRIMARY: ${AI_MODEL_FAIL_PRIMARY:-false}
       NACOS_ADDR: nacos:8848
-      JWT_SECRET: ${JWT_SECRET:-change-this-local-secret-at-least-32-bytes-long}
-    ports: ["9011:9011"]
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
+    expose: ["9011"]
     depends_on:
+      <<: *security_check_depends
       mysql: { condition: service_healthy }
       elasticsearch: { condition: service_healthy }
       nacos: { condition: service_healthy }
@@ -396,20 +460,24 @@ services:
       retries: 20
   mall-web:
     build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: mall-web } }
-    ports: ["8088:80"]
+    ports: ["127.0.0.1:8088:80"]
     depends_on:
+      <<: *security_check_depends
       gateway: { condition: service_healthy }
   admin-web:
     build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: admin-web } }
-    ports: ["8089:80"]
+    ports: ["127.0.0.1:8089:80"]
     depends_on:
+      <<: *security_check_depends
       gateway: { condition: service_healthy }
   mobile-uniapp:
     build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: mobile-uniapp } }
-    ports: ["8090:80"]
+    ports: ["127.0.0.1:8090:80"]
+    depends_on: *security_check_depends
   ops-screen:
     build: { context: ./frontend, dockerfile: Dockerfile, args: { APP: ops-screen } }
-    ports: ["8091:80"]
+    ports: ["127.0.0.1:8091:80"]
+    depends_on: *security_check_depends
 volumes:
   mysql-data:
   redis-data:

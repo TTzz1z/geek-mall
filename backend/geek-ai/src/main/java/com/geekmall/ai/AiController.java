@@ -101,7 +101,9 @@ class AiController {
         return ok(jdbc.queryForList("""
                 SELECT l.request_id AS requestId, l.model_name AS modelName, l.latency_ms AS latencyMs,
                        l.prompt_tokens AS promptTokens, l.completion_tokens AS completionTokens,
-                       l.cost, l.status, l.detail, l.created_at AS createdAt,
+                       l.cost AS estimatedCost, l.cost, l.usage_estimated AS estimated, l.usage_estimated AS tokenUsageEstimated,
+                       CASE WHEN l.usage_estimated THEN 'ESTIMATED' ELSE 'PROVIDER_USAGE' END AS tokenUsageSource,
+                       l.status, l.detail, l.created_at AS createdAt,
                        CASE
                          WHEN l.detail LIKE 'scene=PLAN%' THEN 'PLAN'
                          WHEN l.detail LIKE 'scene=ANSWER%' THEN 'ANSWER'
@@ -133,7 +135,11 @@ class AiController {
                        COALESCE(SUM(CASE WHEN detail LIKE 'scene=PLAN%' OR detail LIKE '%planner%' THEN 1 ELSE 0 END),0) AS planCalls,
                        COALESCE(SUM(CASE WHEN detail LIKE 'scene=ANSWER%' THEN 1 ELSE 0 END),0) AS answerCalls,
                        COALESCE(SUM(CASE WHEN detail LIKE 'scene=PLAN%' OR detail LIKE '%planner%' THEN cost ELSE 0 END),0) AS planCost,
-                       COALESCE(SUM(CASE WHEN detail LIKE 'scene=ANSWER%' THEN cost ELSE 0 END),0) AS answerCost
+                       COALESCE(SUM(CASE WHEN detail LIKE 'scene=ANSWER%' THEN cost ELSE 0 END),0) AS answerCost,
+                       COALESCE(SUM(CASE WHEN usage_estimated THEN prompt_tokens ELSE 0 END),0) AS estimatedPromptTokens,
+                       COALESCE(SUM(CASE WHEN usage_estimated THEN completion_tokens ELSE 0 END),0) AS estimatedCompletionTokens,
+                       COALESCE(SUM(CASE WHEN NOT usage_estimated THEN prompt_tokens ELSE 0 END),0) AS providerPromptTokens,
+                       COALESCE(SUM(CASE WHEN NOT usage_estimated THEN completion_tokens ELSE 0 END),0) AS providerCompletionTokens
                 FROM ai_model_call_log
                 """);
         Map<String, Object> out = new java.util.LinkedHashMap<>();
@@ -142,6 +148,7 @@ class AiController {
         out.put("toolCalls", tools == null ? 0 : tools);
         out.put("toolDenied", denied == null ? 0 : denied);
         out.put("costTotal", agg.get("costTotal"));
+        out.put("estimatedCostTotal", agg.get("costTotal"));
         out.put("promptTokens", agg.get("promptTokens"));
         out.put("completionTokens", agg.get("completionTokens"));
         out.put("avgLatencyMs", Math.round(((Number) agg.get("avgLatencyMs")).doubleValue()));
@@ -149,6 +156,13 @@ class AiController {
         out.put("answerCalls", agg.get("answerCalls"));
         out.put("planCost", agg.get("planCost"));
         out.put("answerCost", agg.get("answerCost"));
+        out.put("estimatedPlanCost", agg.get("planCost"));
+        out.put("estimatedAnswerCost", agg.get("answerCost"));
+        out.put("estimatedPromptTokens", agg.get("estimatedPromptTokens"));
+        out.put("estimatedCompletionTokens", agg.get("estimatedCompletionTokens"));
+        out.put("providerPromptTokens", agg.get("providerPromptTokens"));
+        out.put("providerCompletionTokens", agg.get("providerCompletionTokens"));
+        out.put("tokenUsageNote", "OpenAI-compatible usage is recorded when returned; otherwise token counts are estimated. Cost is always estimated.");
         out.put("planCache", planCache.stats());
         out.put("plannerConcurrency", plannerConcurrencyGuard.stats());
         return ok(out, r);

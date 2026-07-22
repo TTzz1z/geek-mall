@@ -113,7 +113,7 @@ if (-not ($liveTypes -contains 'PRODUCT_FLOOR')) {
   $restore = Api 'POST' "/api/v1/admin/cms/pages/HOME/rollback?versionNo=2" $adminToken $null
   Pass 'restore_cms_v2' ($restore.code -eq 200) ("code=$($restore.code)")
 } else {
-  Pass 'restore_cms_v2' $true 'already has PRODUCT_FLOOR'
+  Pass 'restore_cms_v2' ($liveTypes -contains 'PRODUCT_FLOOR') 'live page already has PRODUCT_FLOOR'
 }
 
 $paLogin = Api 'POST' '/api/v1/auth/login/password' $null @{ username = 'product_admin'; password = 'Geek@123' }

@@ -3,27 +3,22 @@ services:
     volumes: !override
       - type: tmpfs
         target: /var/lib/mysql
-    ports: !override ["13306:3306"]
   redis:
     volumes: !override
       - type: tmpfs
         target: /data
-    ports: !override ["16379:6379"]
   rabbitmq:
     volumes: !override
       - type: tmpfs
         target: /var/lib/rabbitmq
-    ports: !override ["15672:5672", "25672:15672"]
   elasticsearch:
     volumes: !override
       - type: tmpfs
         target: /usr/share/elasticsearch/data
-    ports: !override ["19200:9200"]
   minio:
     volumes: !override
       - type: tmpfs
         target: /data
-    ports: !override ["19100:9000", "19101:9001"]
   nacos:
     profiles: ["extended"]
   auth-system:

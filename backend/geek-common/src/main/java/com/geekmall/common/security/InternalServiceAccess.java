@@ -6,7 +6,7 @@ import com.geekmall.common.api.BusinessException;
  * Shared check for service-to-service {@code X-Internal-Key}.
  */
 public final class InternalServiceAccess {
-    public static final String PLACEHOLDER_KEY = "change-internal-service-key";
+    public static final String PLACEHOLDER_KEY = "CHANGE_ME_INTERNAL_SERVICE_KEY";
 
     private InternalServiceAccess() {
     }
@@ -21,6 +21,8 @@ public final class InternalServiceAccess {
     }
 
     public static boolean isPlaceholder(String configured) {
-        return configured == null || configured.isBlank() || PLACEHOLDER_KEY.equals(configured);
+        return configured == null || configured.isBlank()
+                || PLACEHOLDER_KEY.equals(configured)
+                || "change-internal-service-key".equals(configured);
     }
 }

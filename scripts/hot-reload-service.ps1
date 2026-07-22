@@ -62,7 +62,6 @@ if ($LocalPort -gt 0) {
     MYSQL_PASSWORD = "geek_local_password"
     NACOS_ADDR = "127.0.0.1:8848"
     JWT_SECRET = "change-this-local-secret-at-least-32-bytes-long"
-    INTERNAL_SERVICE_KEY = "CHANGE_ME_INTERNAL_SERVICE_KEY"
     ELASTICSEARCH_URL = "http://127.0.0.1:9200"
     PRODUCT_SERVICE_URL = "http://127.0.0.1:9002"
     TRADE_SERVICE_URL = "http://127.0.0.1:9005"
@@ -75,6 +74,9 @@ if ($LocalPort -gt 0) {
     if ([string]::IsNullOrWhiteSpace($cur) -or $k -eq 'AI_PORT' -or $k -like '*_URL' -or $k -eq 'NACOS_ADDR' -or $k -eq 'AI_MYSQL_URL') {
       Set-Item -Path "Env:$k" -Value $defaults[$k]
     }
+  }
+  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('INTERNAL_SERVICE_KEY', 'Process'))) {
+    throw 'INTERNAL_SERVICE_KEY must be set in the process environment or .env'
   }
 
   $work = Join-Path $Backend $Module

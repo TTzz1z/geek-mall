@@ -79,28 +79,29 @@ public class ModelGateway {
             if (failPrimary) {
                 throw new IllegalStateException("primary model unavailable");
             }
+            RemoteCompletion remote = null;
             String text;
             if (!remoteConfigured()) {
                 text = localComplete(systemPrompt, userPrompt);
             } else {
-                text = openAiCompatibleChat(systemPrompt, userPrompt, temperature, llmTimeoutMs, false);
+                remote = openAiCompatibleChat(systemPrompt, userPrompt, temperature, llmTimeoutMs, false);
+                text = remote.text();
             }
-            int promptTokens = estimateTokens(systemPrompt + userPrompt);
-            int completionTokens = estimateTokens(text);
+            TokenUsage usage = tokenUsage(systemPrompt, userPrompt, text, remote);
             log(requestId, conversationId, model, (int) (System.currentTimeMillis() - start),
-                    promptTokens, completionTokens, "SUCCESS",
+                    usage.promptTokens(), usage.completionTokens(), usage.estimated(), "SUCCESS",
                     remoteConfigured() ? ("scene=" + scene) : "local");
-            return new CompletionResult(model, text, promptTokens, completionTokens, false);
+            return new CompletionResult(model, text, usage.promptTokens(), usage.completionTokens(), usage.estimated(), !remoteConfigured());
         } catch (Exception primaryError) {
             model = fallback;
             String text = localComplete(systemPrompt, userPrompt) + "\n\n（已降级至 " + fallback + "）";
             int promptTokens = estimateTokens(systemPrompt + userPrompt);
             int completionTokens = estimateTokens(text);
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
-                    promptTokens, 0, "FAILED", "scene=" + scene + ";" + primaryError.getMessage());
+                    promptTokens, 0, true, "FAILED", "scene=" + scene + ";" + primaryError.getMessage());
             log(requestId + "-fb", conversationId, model, (int) (System.currentTimeMillis() - start),
-                    promptTokens, completionTokens, "SUCCESS", "scene=" + scene + ";fallback");
-            return new CompletionResult(model, text, promptTokens, completionTokens, true);
+                    promptTokens, completionTokens, true, "SUCCESS", "scene=" + scene + ";fallback");
+            return new CompletionResult(model, text, promptTokens, completionTokens, true, true);
         }
     }
 
@@ -120,21 +121,20 @@ public class ModelGateway {
         long start = System.currentTimeMillis();
         String requestId = UUID.randomUUID().toString();
         try {
-            String text = openAiCompatibleChat(systemPrompt, userPrompt, temperature, timeoutMs, true);
-            int promptTokens = estimateTokens(systemPrompt + userPrompt);
-            int completionTokens = estimateTokens(text);
+            RemoteCompletion remote = openAiCompatibleChat(systemPrompt, userPrompt, temperature, timeoutMs, true);
+            TokenUsage usage = tokenUsage(systemPrompt, userPrompt, remote.text(), remote);
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
-                    promptTokens, completionTokens, "SUCCESS", "scene=" + scene);
-            return new CompletionResult(primary, text, promptTokens, completionTokens, false);
+                    usage.promptTokens(), usage.completionTokens(), usage.estimated(), "SUCCESS", "scene=" + scene);
+            return new CompletionResult(primary, remote.text(), usage.promptTokens(), usage.completionTokens(), usage.estimated(), false);
         } catch (Exception ex) {
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
-                    estimateTokens(systemPrompt + userPrompt), 0, "FAILED",
+                    estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED",
                     "scene=" + scene + ";" + (ex.getMessage() == null ? "planner-failed" : ex.getMessage()));
             throw ex;
         }
     }
 
-    private String openAiCompatibleChat(String systemPrompt, String userPrompt,
+    private RemoteCompletion openAiCompatibleChat(String systemPrompt, String userPrompt,
                                         double temperature, int timeoutMs, boolean jsonObject) throws Exception {
         List<Map<String, Object>> messages = new ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isBlank()) {
@@ -170,7 +170,10 @@ public class ModelGateway {
         if (content.isMissingNode() || content.asText().isBlank()) {
             throw new IllegalStateException("LLM empty content: " + truncate(response.body()));
         }
-        return content.asText();
+        JsonNode usage = root.path("usage");
+        boolean hasUsage = usage.isObject() && usage.has("prompt_tokens") && usage.has("completion_tokens");
+        return new RemoteCompletion(content.asText(), usage.path("prompt_tokens").asInt(),
+                usage.path("completion_tokens").asInt(), hasUsage);
     }
 
     private String localComplete(String systemPrompt, String userPrompt) {
@@ -178,13 +181,21 @@ public class ModelGateway {
     }
 
     private void log(String requestId, Long conversationId, String model, int latency,
-                     int promptTokens, int completionTokens, String status, String detail) {
+                     int promptTokens, int completionTokens, boolean usageEstimated, String status, String detail) {
         double cost = (promptTokens + completionTokens) * 0.000002;
         jdbc.update("""
-                INSERT INTO ai_model_call_log(id,request_id,conversation_id,model_name,latency_ms,prompt_tokens,completion_tokens,cost,status,detail,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO ai_model_call_log(id,request_id,conversation_id,model_name,latency_ms,prompt_tokens,completion_tokens,cost,usage_estimated,status,detail,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """, com.geekmall.common.domain.DistributedId.next(), requestId, conversationId, model, latency,
-                promptTokens, completionTokens, cost, status, detail, Timestamp.from(Instant.now()));
+                promptTokens, completionTokens, cost, usageEstimated, status,
+                (detail == null ? "" : detail) + ";usage=" + (usageEstimated ? "estimated" : "actual"), Timestamp.from(Instant.now()));
+    }
+
+    private TokenUsage tokenUsage(String systemPrompt, String userPrompt, String text, RemoteCompletion remote) {
+        if (remote != null && remote.hasUsage()) {
+            return new TokenUsage(remote.promptTokens(), remote.completionTokens(), false);
+        }
+        return new TokenUsage(estimateTokens(systemPrompt + userPrompt), estimateTokens(text), true);
     }
 
     private static int estimateTokens(String text) {
@@ -202,12 +213,19 @@ public class ModelGateway {
         return s.length() <= 400 ? s : s.substring(0, 400);
     }
 
-    public record CompletionResult(String modelName, String text, int promptTokens, int completionTokens, boolean degraded) {
+    private record RemoteCompletion(String text, int promptTokens, int completionTokens, boolean hasUsage) {}
+    private record TokenUsage(int promptTokens, int completionTokens, boolean estimated) {}
+
+    public record CompletionResult(String modelName, String text, int promptTokens, int completionTokens,
+                                   boolean tokenUsageEstimated, boolean degraded) {
         public Map<String, Object> asMap() {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("modelName", modelName);
             m.put("promptTokens", promptTokens);
             m.put("completionTokens", completionTokens);
+            m.put("estimated", tokenUsageEstimated);
+            m.put("tokenUsageEstimated", tokenUsageEstimated);
+            m.put("tokenUsageSource", tokenUsageEstimated ? "ESTIMATED" : "PROVIDER_USAGE");
             m.put("degraded", degraded);
             return m;
         }

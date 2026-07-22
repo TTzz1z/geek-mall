@@ -3,6 +3,7 @@ package com.geekmall.ai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -25,18 +26,27 @@ public class HybridRagService {
     private final boolean milvusEnabled;
     private final String milvusHost;
     private final int milvusPort;
+    private final double minEvidenceScore;
 
+    @Autowired
     public HybridRagService(JdbcTemplate jdbc, ObjectMapper mapper,
                             @Value("${geek.elasticsearch-url}") String esBase,
                             @Value("${geek.milvus.enabled:false}") boolean milvusEnabled,
                             @Value("${geek.milvus.host:localhost}") String milvusHost,
-                            @Value("${geek.milvus.port:19530}") int milvusPort) {
+                            @Value("${geek.milvus.port:19530}") int milvusPort,
+                            @Value("${geek.rag.min-evidence-score:0.45}") double minEvidenceScore) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.esBase = esBase.endsWith("/") ? esBase.substring(0, esBase.length() - 1) : esBase;
         this.milvusEnabled = milvusEnabled;
         this.milvusHost = milvusHost;
         this.milvusPort = milvusPort;
+        this.minEvidenceScore = minEvidenceScore;
+    }
+
+    HybridRagService(JdbcTemplate jdbc, ObjectMapper mapper, String esBase, boolean milvusEnabled,
+                     String milvusHost, int milvusPort) {
+        this(jdbc, mapper, esBase, milvusEnabled, milvusHost, milvusPort, 0.45);
     }
 
     @PostConstruct
@@ -55,7 +65,7 @@ public class HybridRagService {
 
         Map<Long, Scored> fused = new LinkedHashMap<>();
 
-        // 1) MySQL keyword / local vector over all READY chunks
+        // 1) MySQL keyword + local 64-dimensional deterministic character-hash prototype.
         for (Map<String, Object> row : loadChunks()) {
             long chunkId = ((Number) row.get("chunkId")).longValue();
             String content = String.valueOf(row.get("content"));
@@ -79,20 +89,13 @@ public class HybridRagService {
             }
         }
 
-        // 3) Milvus remote boost (optional)
-        if (milvusEnabled) {
-            for (var e : fused.entrySet()) {
-                double boost = milvusBoost(q, e.getValue());
-                if (boost > 0) {
-                    Scored s = e.getValue();
-                    fused.put(e.getKey(), new Scored(s.row, s.fused + 0.1 * boost, s.bm25, Math.min(1.0, s.vector + boost * 0.2), s.es));
-                }
-            }
-        }
-
         List<Scored> scored = new ArrayList<>(fused.values());
         scored.sort((a, b) -> Double.compare(rerank(q, b), rerank(q, a)));
-        return scored.stream().limit(topK).map(s -> toCitation(s, q)).toList();
+        List<Scored> top = scored.stream().limit(topK).toList();
+        if (top.isEmpty() || rerank(q, top.getFirst()) < minEvidenceScore) {
+            return List.of();
+        }
+        return top.stream().map(s -> toCitation(s, q, rerank(q, s))).toList();
     }
 
     public String buildEvidence(List<Citation> citations) {
@@ -206,7 +209,7 @@ public class HybridRagService {
         return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
     }
 
-    private Citation toCitation(Scored s, String query) {
+    private Citation toCitation(Scored s, String query, double finalScore) {
         Map<String, Object> row = s.row();
         String meta = String.valueOf(row.get("metadata"));
         String section = extract(meta, "section", "正文");
@@ -219,9 +222,11 @@ public class HybridRagService {
                 section,
                 String.valueOf(row.get("versionNo")),
                 String.valueOf(row.get("content")),
-                round(s.fused),
+                round(finalScore),
                 Map.of("bm25", round(s.bm25), "vector", round(s.vector), "es", round(s.es),
-                        "milvusEnabled", milvusEnabled, "query", query)
+                        "localVector", "64-dimensional deterministic character-hash prototype",
+                        "milvusMode", milvusEnabled ? "CONNECTION_SKELETON_ONLY" : "DISABLED",
+                        "minEvidenceScore", minEvidenceScore, "query", query)
         );
     }
 
@@ -256,25 +261,7 @@ public class HybridRagService {
     private double vectorScore(String query, String content, String vectorId, long chunkId) {
         double[] qv = embed(query);
         double[] dv = loadOrBuildEmbedding(chunkId, vectorId, content);
-        double cos = cosine(qv, dv);
-        if (milvusEnabled && vectorId != null && vectorId.startsWith("vec-")) {
-            cos = Math.min(1.0, cos + 0.05);
-        }
-        return cos;
-    }
-
-    private double milvusBoost(String query, Scored scored) {
-        // Prefer stored vector similarity; optionally probe Milvus HTTP health for "remote" path.
-        try {
-            HttpRequest req = HttpRequest.newBuilder(URI.create("http://" + milvusHost + ":" + milvusPort + "/v1/vector/collections"))
-                    .timeout(java.time.Duration.ofMillis(400)).GET().build();
-            HttpResponse<String> r = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (r.statusCode() >= 200 && r.statusCode() < 500) {
-                return Math.min(1.0, scored.vector + 0.15);
-            }
-        } catch (Exception ignored) {
-        }
-        return scored.vector;
+        return cosine(qv, dv);
     }
 
     private void upsertLocalVector(long chunkId, String vectorId, String content) {
@@ -315,7 +302,7 @@ public class HybridRagService {
         return embed(content);
     }
 
-    /** Deterministic bag-of-char hashing into fixed dim for offline demo / CI. */
+    /** Deterministic 64-dimensional character-hash prototype for offline demo / CI; not an embedding model. */
     static double[] embed(String text) {
         double[] v = new double[64];
         if (text == null || text.isBlank()) return v;

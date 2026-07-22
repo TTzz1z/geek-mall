@@ -4,7 +4,10 @@ export default defineConfig({
   testDir: './tests',
   timeout: 120_000,
   retries: 0,
-  reporter: [['list']],
+  reporter: [
+    ['list'],
+    ['json', { outputFile: process.env.E2E_JSON_REPORT || 'reports/playwright-api-results.json' }]
+  ],
   projects: [
     { name: 'api', testMatch: /api-core-flow\.spec\.ts/ }
   ],

@@ -115,13 +115,6 @@ class AuthController {
         return ApiResponse.success(authService.adminAuditLogs(limit == null ? 100 : limit), requestId(request));
     }
 
-    @GetMapping("/merchant/demo/orders")
-    @PreAuthorize("@rbac.has('merchant:order:view')")
-    ApiResponse<List<AuthService.MerchantOrder>> merchantOrders(
-            @RequestParam(required = false) Long merchantId, HttpServletRequest request) {
-        return ApiResponse.success(authService.merchantOrders(merchantId), requestId(request));
-    }
-
     private static String requestId(HttpServletRequest request) {
         return String.valueOf(request.getAttribute("requestId"));
     }

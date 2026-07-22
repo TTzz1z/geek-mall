@@ -1,164 +1,134 @@
-# ENGINEERING.md · 极客商城
+# Geek Mall 工程说明
 
-## 1. 架构总览
+## 架构
 
-```text
-浏览器 / H5
-    │
-    ▼
-mall-web :8088 · admin-web :8089 · mobile :8090 · ops :8091
-    │  (nginx 同源反代 /api → gateway)
-    ▼
-geek-gateway :8080
-    ├─ auth-system :9001
-    ├─ merchant-product :9002
-    ├─ inventory-fulfillment :9003
-    ├─ search-recommend :9004
-    ├─ trade :9005
-    ├─ member :9006
-    ├─ marketing :9007
-    ├─ aftersale :9008
-    ├─ service-center :9009
-    ├─ settlement :9010
-    └─ ai :9011
-中间件：MySQL · Redis · RabbitMQ · Nacos · Elasticsearch · MinIO
-可选：Prometheus / Grafana / Jaeger（见 observability/）
-```
+Geek Mall 采用前端多应用、Gateway 和业务域微服务结构。Docker 部署时，前端 nginx 通过同源 `/api` 代理到 Compose 网络内的 `gateway:8080`；业务服务和中间件默认不发布宿主机端口。
 
-**关键决策**
-
-- 交易最终一致性优先，避免大范围分布式事务框架
-- AI **不直连业务库**，只调受控 HTTP API；L4 动作（支付/下单/正式退款）拒绝执行
-- 支付通道可插拔；演示默认 `SIMULATED`
-- 日常构建：本机 Maven / pnpm + Compose 跑中间件；避免低配机全量镜像内编译
-
-AI 编排详设：[docs/ai-orchestration.md](docs/ai-orchestration.md)
-
----
-
-## 2. 目录结构
-
-| 路径 | 说明 |
+| 层 | 组成 |
 |---|---|
-| `backend/geek-*` | 各微服务（含 Flyway 迁移与种子） |
-| `backend/geek-common` | 公共 Web / 安全组件 |
-| `frontend/apps/*` | mall / admin / mobile-uniapp / ops-screen |
-| `frontend/packages/*` | 共享类型与工具 |
-| `scripts/` | 启动、热加载、冒烟、备份 |
-| `contracts/` | 领域事件 Schema + 样例（CI / `contract-check`） |
-| `e2e/` | Playwright API 冒烟 |
-| `observability/` | Prometheus / Grafana 配置 |
-| `perf/jmeter/` | JMeter 计划（报告目录 gitignore，运行时生成） |
-| `deploy/` | 前端 nginx 等部署片段 |
-| `docs/` | 验收说明、AI 设计、截图 |
-| `assets/product-covers/` | 可选 SVG 封面源（运行时以 mall `public/covers` JPEG 为准） |
+| 前端应用 | `mall-web`、`admin-web`、`mobile-uniapp`、`ops-screen` |
+| 接入层 | `geek-gateway` |
+| 业务服务 | auth、merchant-product、inventory-fulfillment、search-recommend、trade、member、marketing、aftersale、service-center、settlement、ai |
+| 基础设施 | MySQL、Redis、RabbitMQ、Elasticsearch、MinIO、Nacos |
+| 可选观测 | Prometheus、Grafana、Jaeger、Blackbox Exporter |
 
-Compose 变体（`docker-compose.dev.yml` / `test` / `observability`）保留在**仓库根目录**，与 CI、脚本默认路径一致，降低相对路径风险。
+后端使用 Java 21、Spring Boot 3.3.5、Spring Cloud 2023.0.3 和 Spring Cloud Alibaba 2023.0.3.2。前端使用 pnpm workspace 管理 Vue/TypeScript/Vite 应用和共享包。
 
----
+关键工程取舍：
 
-## 3. 视觉语言（摘要）
+- 每个业务域维护自己的数据表和 Flyway 迁移，不使用跨库强事务；跨服务副作用通过幂等、事件/outbox 和补偿处理。
+- 交易域保存总订单、商家子订单和订单项；商家查询从 JWT 的 `merchantId` 推导租户范围，不接受调用方指定任意租户。
+- AI 只调用受控业务 API，不直连业务数据库；高风险工具在代码层拒绝。
+- 默认 Compose 面向本机演示，入口和密钥策略不能直接作为公网部署方案。
 
-商城前台为浅色产品摄影风：冰川灰画布、低圆角、克制阴影；强调色 Geek 橙 `#FF5A1F` 用于价格与主操作。实现以 `frontend/apps/mall-web` 样式变量为准。
+## 数据库与迁移
 
----
+`deploy/mysql/init-databases.sql` 创建各业务库；服务启动后由 Flyway 执行 `backend/geek-*/src/main/resources/db/migration/` 下的迁移。
 
-## 4. 数据与模型要点
+| 服务 | 主要数据库 | 迁移内容 |
+|---|---|---|
+| auth-system | `geek_system` | 用户、角色、租户和本地演示账号 |
+| merchant-product | `geek_merchant_product` | 店铺、品牌、SPU/SKU、商品治理与 Seed |
+| inventory-fulfillment | `geek_inventory` | 库存、预占、outbox、履约和物流 |
+| search-recommend | `geek_search` | 搜索消费记录与 Seed；商品检索由 Elasticsearch Gateway 承担 |
+| trade | `geek_trade` | 购物车、总订单、商家子订单、支付、退款和事件消费 |
+| member | `geek_member` | 会员、积分和地址 |
+| marketing | `geek_marketing` | 优惠、秒杀、CMS、A/B 和 outbox |
+| aftersale-service | `geek_aftersale` | 售后单和状态日志 |
+| service-center | `geek_service` | 客服会话、工单和 SLA |
+| settlement | `geek_settlement` | 结算、提现和日汇总 |
+| ai | `geek_ai` | 会话、消息、知识、评测、调用日志和 provenance |
 
-- 权威订单：`geek_trade.trade_order` / `trade_sub_order` / `trade_order_item`
-- 接口前缀：`/api/v1/trade/**`、`/api/v1/payments/**`
-- `geek_system.demo_merchant_order` 仅为早期样例，**不是**真实交易源
-- 商品封面 / 店铺 logo 使用同源 `/covers/*.jpg`
-- 本地演示角色见 `README.md`；**勿用于生产**
+约定：
 
----
+- `V*__*.sql` 是版本迁移，已发布后不应改写；新结构通过新版本迁移演进。
+- `R__*.sql` 是可重复 Seed，用于本地演示和验收，不能作为生产账号初始化方式。
+- 仓库根目录不保存本地数据库 dump；备份脚本输出到被 Git 忽略的 `backups/`。
 
-## 5. 接口与契约
+## 接口与契约
 
-- 对外统一经 Gateway：`http://127.0.0.1:8080/api/v1/**`
-- 前端 Docker 部署时 `VITE_API_BASE_URL` 置空，由 nginx 反代 `/api`
-- 契约：`contracts/events/domain-event.schema.json` + `samples/`；`contracts/http/checkout-preview.request.json`
-- 写操作普遍要求 `X-Request-Id`；下单强制 `Idempotency-Key`
+外部 HTTP API 统一使用 `/api/v1/**`，由 Gateway 路由。Docker 前端部署通过同源 `/api` 访问，避免把 Gateway 直接发布到宿主机。
 
----
+主要接口域：
 
-## 6. 配置与密钥
+- 认证：`/api/v1/auth/**`；
+- 商品与搜索：`/api/v1/products/**`、`/api/v1/search/**`；
+- 交易：`/api/v1/trade/**`、`/api/v1/payments/**`；
+- 商家订单：`/api/v1/merchant/orders/**`；
+- 售后：`/api/v1/aftersales/**`；
+- AI：`/api/v1/ai/**`。
 
-| 文件 | 用途 |
-|---|---|
-| `.env.example` | 可提交模板（占位密钥） |
-| `.env` | **本地私密**（gitignore），含 DB / JWT / LLM Key |
+写请求携带 `X-Request-Id`；创建订单要求 `Idempotency-Key`。当前机器可读契约位于：
 
-- 真实 `LLM_API_KEY` 只放 `.env`
-- `PAYMENT_WECHAT_ENABLED` / `PAYMENT_ALIPAY_ENABLED` 默认 `false`
+- `contracts/events/domain-event.schema.json`；
+- `contracts/events/samples/*.json`；
+- `contracts/http/checkout-preview.request.json`。
 
----
+契约目录只覆盖少量关键样例，不是完整 OpenAPI。事件发布/消费需要同时维持事件 ID 幂等和 schema 兼容。
 
-## 7. 部署与运行
+## 部署与配置
 
-### 7.1 一键演示
-
-```powershell
-powershell -File scripts\demo-up.ps1
-```
-
-### 7.2 AI 本机热加载（可选）
-
-```powershell
-docker compose stop ai
-# .env: AI_SERVICE_URI=http://host.docker.internal:9011
-powershell -File scripts\hot-reload-service.ps1 -Module geek-ai -LocalPort 9011
-docker compose up -d --no-deps --force-recreate gateway
-```
-
-预构建 AI 镜像：`scripts\build-ai-image.ps1`
-
-### 7.3 前端镜像（推荐 prebuilt）
+### 本地 Compose
 
 ```powershell
-cd frontend
-$env:VITE_API_BASE_URL=''
-pnpm --filter @geek-mall/mall-web build
-cd ..
-docker build -f frontend/Dockerfile.prebuilt --build-arg APP=mall-web -t geek-mall-mall-web frontend
-docker compose up -d mall-web --no-deps --force-recreate
+Copy-Item .env.example .env
+docker compose -f docker-compose.yml config --quiet
+docker compose up -d --build
 ```
 
-### 7.4 移动端
+默认发布：`mall-web` 8088、`admin-web` 8089、`mobile-uniapp` 8090、`ops-screen` 8091，全部绑定 `127.0.0.1`。Gateway 8080、业务端口 9001–9011 和中间件端口留在 Compose 网络。
 
-- 工程：`frontend/apps/mobile-uniapp`
-- H5：`pnpm --filter @geek-mall/mobile-uniapp build:h5`（8090）
-- 微信：导入 `dist/build/mp-weixin`；`manifest.json` 中 appid 默认留空；不接真实微信登录/支付
+`docker-compose.debug.yml` 只用于开发机本地调试，以回环地址发布 MySQL、Redis、RabbitMQ、Elasticsearch、MinIO 和 Nacos。`docker-compose.observability.yml` 增加 Prometheus、Grafana、Jaeger 和 Blackbox Exporter。`docker-compose.test.yml` 为测试 profile 提供资源约束。
 
-### 7.5 观测与备份
+### 环境变量
 
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --no-build
-powershell -File scripts\backup.ps1   # 输出 backups/（gitignore）
-```
+- `.env.example` 只保存可提交的占位配置；`.env` 被 Git 忽略并可能包含本地密钥。
+- 真实 `LLM_API_KEY` 只能放入本地/部署环境的秘密管理系统。
+- `PAYMENT_WECHAT_ENABLED` 和 `PAYMENT_ALIPAY_ENABLED` 默认 `false`；仓库没有可直接上线的真实支付凭据和回调配置。
+- 共享环境应设置 `GEEK_SHARED_ENVIRONMENT=true`；Compose 的启动检查会拒绝文档化占位密钥和仅适合本机的 Nacos 关闭认证配置。
 
----
+### 构建策略
 
-## 8. 测试与验收
+日常开发可在宿主机运行 Maven/pnpm，只用 Compose 启动依赖。`backend/Dockerfile.prebuilt`、`frontend/Dockerfile.prebuilt` 和相关脚本支持把宿主机构建产物装入镜像；这些产物写入 `target/`、`dist/` 或 `.docker-stage/`，不进入版本库。
 
-| 类型 | 命令 |
-|---|---|
-| 后端 | `cd backend; mvn -B -ntp verify` |
-| 前端 | `cd frontend; pnpm typecheck; pnpm test; pnpm build` |
-| Compose | `docker compose -f docker-compose.yml config` |
-| 契约 | `scripts\contract-check.ps1` |
-| 交易主链 | `scripts\e2e-core-flow.ps1` |
-| 展示面 + 主链 | `scripts\showcase-phase5.ps1` |
-| 公开验收说明 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) |
-| CI | `.github/workflows/ci.yml` |
+## 安全
 
-脚本生成的报告写入 `reports/` 或 `perf/reports/`（均 gitignore，目录由运行时创建）。
+- 认证服务签发 Access/Refresh Token；服务端鉴权和租户过滤是最终边界，前端菜单隐藏不构成授权。
+- 密码通过 `Pbkdf2PasswordHasher` 处理；演示 Seed 使用公开固定密码，只能用于本地。
+- Gateway/服务过滤器传播认证与请求标识；内部服务访问由公共安全组件校验。
+- 创建订单、支付回调、库存预占和事件消费包含幂等/并发防护，并有针对性测试。
+- 商品文档上传由 `UploadFileValidator` 执行类型、大小和文件名等检查；仍需在公网部署前补充恶意内容扫描和对象存储策略。
+- AI 通过 `ToolPolicy`、`PlanValidator` 和 `AnswerGrounding` 限制工具、参数来源和输出；prompt 不能覆盖 L4 拒绝策略。
+- 本地 Compose 不得通过公网隧道、路由 NAT 或云端口映射直接暴露。公网部署需要独立的入口、TLS、WAF/限流、密钥管理、网络策略和审计设计。
 
----
+## 测试与质量
 
-## 9. 安全与质量护栏
+| 层 | 命令/入口 | 说明 |
+|---|---|---|
+| 后端 | `cd backend; mvn -B -ntp verify` | 单元/集成测试和 Flyway 启动校验 |
+| 前端 | `cd frontend; pnpm typecheck; pnpm test; pnpm build` | 类型、Vitest 和构建 |
+| Compose | `docker compose -f docker-compose.yml config --quiet` | 配置展开校验 |
+| 契约 | `scripts/contract-check.ps1` | 事件 schema 与样例 |
+| API 主链 | `scripts/e2e-core-flow.ps1` | 交易、支付、商家隔离、售后和 AI 最小断言 |
+| 并发专项 | `scripts/concurrency-verify.ps1` | 幂等下单及精确 Maven 并发/回调测试 |
+| Playwright API | `cd e2e; pnpm test:api` | 不启动浏览器的 API smoke |
+| 性能计划 | `perf/jmeter/geek-mall-smoke.jmx` | 小型 JMeter 计划，不代表容量结论 |
+| CI | `.github/workflows/ci.yml` | 后端、前端、Compose、契约和 Trivy |
 
-- Access + Refresh Token；写接口后端鉴权为准
-- 库存条件更新预占；支付模拟幂等
-- AI 工具白名单 + 风险分级
-- 演示痕迹扫描：`scripts/scan-demo-hints.py`
+默认 Compose 下应先设置 `$env:E2E_BASE_URL='http://127.0.0.1:8088'`，让 API 验收通过商城 nginx 代理。报告和构建目录均被 Git 忽略，清理后可由命令重新生成。详细断言见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)。
+
+## 可观测性与运维
+
+`observability/` 保存 Prometheus 抓取/告警和 Grafana provisioning/dashboard。`scripts/observability-up.ps1`、`backup.ps1|sh`、`restore.ps1|sh`、`backup-restore-drill.ps1` 提供本地演示入口。
+
+这些配置用于本地验证，没有形成生产 SLO、值班流程、日志集中化、备份保留策略或异地灾备保证。备份恢复脚本在真实环境使用前必须进行权限、加密、保留和恢复点评审。
+
+## 技术债
+
+- 三个 workspace 包 `shared-utils`、`shared-icons`、`business-enums` 当前未被应用导入，但仍在 workspace 中；完整回归后再决定删除或复用。
+- `scripts/` 中保留 Phase/Stage 命名的历史验证入口；应逐步合并为按能力命名的稳定命令。
+- HTTP/事件契约只覆盖少量样例，缺少完整 OpenAPI、生成客户端和兼容性门禁。
+- Playwright 当前是 API smoke，缺少浏览器级主路径、视觉回归和移动真机自动化。
+- 微信/支付宝、发票、退款到账和仓储物流仍是模拟或骨架，不可视为生产集成。
+- AI 本地检索不是 Embedding/Milvus 实现；远程模型质量、供应商故障、数据脱敏和账单对账仍需补齐。
+- 本地观测与备份配置尚未达到生产 SLO、审计和灾备要求。

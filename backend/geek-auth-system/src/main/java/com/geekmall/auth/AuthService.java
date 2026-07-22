@@ -5,7 +5,6 @@ import com.geekmall.common.domain.DistributedId;
 import com.geekmall.common.security.AuthAccessKeys;
 import com.geekmall.common.security.AuthPrincipal;
 import com.geekmall.common.security.JwtService;
-import com.geekmall.common.security.TenantContext;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -245,20 +244,6 @@ class AuthService {
                 rs.getString("requestId"), rs.getTimestamp("createdAt").toInstant().toString()), size);
     }
 
-    /**
-     * DEMO ONLY：读取 geek_system.demo_merchant_order 样例行，供商家后台早期演示。
-     * 真实交易订单在 geek_trade.trade_order / trade_sub_order，勿将本接口当作订单主数据源。
-     */
-    List<MerchantOrder> merchantOrders(Long requestedMerchantId) {
-        TenantContext.assertAccessible(requestedMerchantId);
-        long merchantId = TenantContext.requireMerchantId();
-        return jdbc.query("""
-                SELECT order_no, merchant_id, title, amount, status
-                FROM demo_merchant_order WHERE merchant_id = ? ORDER BY order_no
-                """, (rs, rowNum) -> new MerchantOrder(rs.getString("order_no"), rs.getLong("merchant_id"),
-                rs.getString("title"), rs.getBigDecimal("amount"), rs.getString("status")), merchantId);
-    }
-
     private TokenPair tokens(AuthPrincipal principal, String refreshToken) {
         return new TokenPair(jwtService.issue(principal, properties.accessTtl()), refreshToken,
                 properties.accessTtl().toSeconds(), principal);
@@ -314,9 +299,6 @@ class AuthService {
 
     record AuditLog(String id, Long userId, String module, String action, String targetId,
                     String requestId, String createdAt) {
-    }
-
-    record MerchantOrder(String orderNo, long merchantId, String title, java.math.BigDecimal amount, String status) {
     }
 
     private record UserRow(long id, String username, String passwordHash, String userType, String status,

@@ -9,7 +9,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -39,21 +38,6 @@ class AuthFlowIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
                 .andExpect(status().isOk());
-    }
-
-    @Test
-    void merchantCannotReadAnotherMerchantsOrders() throws Exception {
-        String accessToken = login("merchant_a").path("data").path("accessToken").asText();
-
-        String own = mockMvc.perform(get("/api/v1/merchant/demo/orders")
-                        .header("Authorization", "Bearer " + accessToken))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        assertThat(own).contains("GM202607150001").doesNotContain("GM202607150002");
-
-        mockMvc.perform(get("/api/v1/merchant/demo/orders").param("merchantId", "2002")
-                        .header("Authorization", "Bearer " + accessToken))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("AU40303"));
     }
 
     private JsonNode login(String username) throws Exception {

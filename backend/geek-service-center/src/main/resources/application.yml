@@ -4,15 +4,15 @@ spring:
   datasource:
     url: ${SERVICE_MYSQL_URL:jdbc:mysql://localhost:3306/geek_service?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${MYSQL_USER:geek}
-    password: ${MYSQL_PASSWORD:geek_local_password}
+    password: ${MYSQL_PASSWORD:CHANGE_ME_MYSQL_PASSWORD}
   flyway.locations: classpath:db/migration
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USER:geek}
-    password: ${RABBITMQ_PASSWORD:geek_local_password}
+    password: ${RABBITMQ_PASSWORD:CHANGE_ME_RABBITMQ_PASSWORD}
   cloud.nacos.discovery.server-addr: ${NACOS_ADDR:localhost:8848}
 geek:
-  auth.jwt-secret: ${JWT_SECRET:change-this-local-secret-at-least-32-bytes-long}
+  auth.jwt-secret: ${JWT_SECRET:CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
   internal-key: ${INTERNAL_SERVICE_KEY:CHANGE_ME_INTERNAL_SERVICE_KEY}
 management.endpoints.web.exposure.include: health,info,prometheus

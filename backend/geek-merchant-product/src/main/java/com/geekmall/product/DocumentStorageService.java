@@ -17,19 +17,17 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
-import java.util.Locale;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
 class DocumentStorageService {
+    static final String PUBLIC_COVER_PREFIX = "public/covers/";
+    static final String PRIVATE_DOCUMENT_PREFIX = "private/documents/";
+
     private static final String REGION = "us-east-1";
     private static final String SERVICE = "s3";
     private static final DateTimeFormatter AMZ_DATE = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC);
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC);
-    private static final Set<String> COVER_TYPES = Set.of(
-            "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/svg+xml"
-    );
 
     private final HttpClient http = HttpClient.newHttpClient();
     private final URI endpoint;
@@ -51,52 +49,76 @@ class DocumentStorageService {
         this.publicBaseUrl = publicBaseUrl.endsWith("/") ? publicBaseUrl.substring(0, publicBaseUrl.length() - 1) : publicBaseUrl;
     }
 
-    String upload(long spuId, MultipartFile file) {
-        if (file.isEmpty()) throw new BusinessException("PD40005", "上传文件不能为空");
-        String original = file.getOriginalFilename() == null ? "document.bin" : file.getOriginalFilename();
-        String safeName = original.replaceAll("[^a-zA-Z0-9._-]", "_");
-        String objectName = "products/" + spuId + "/" + UUID.randomUUID() + "-" + safeName;
+    StoredObject uploadDocument(long spuId, MultipartFile file) {
+        UploadFileValidator.ValidatedUpload upload = UploadFileValidator.document(file);
+        String objectName = PRIVATE_DOCUMENT_PREFIX + spuId + "/" + UUID.randomUUID() + "-" + upload.safeFileName();
+        putObject(objectName, upload, "商品资料对象存储不可用");
+        return new StoredObject(objectName, "minio://" + bucket + "/" + objectName,
+                upload.safeFileName(), upload.contentType(), upload.size());
+    }
+
+    StoredObject uploadCover(long spuId, MultipartFile file) {
+        UploadFileValidator.ValidatedUpload upload = UploadFileValidator.cover(file);
+        String objectName = PUBLIC_COVER_PREFIX + spuId + "/" + UUID.randomUUID() + "." + upload.extension();
         try {
             ensureBucket();
-            byte[] content = file.getBytes();
-            String contentType = file.getContentType() == null ? "application/octet-stream" : file.getContentType();
-            HttpResponse<Void> response = send("PUT", "/" + bucket + "/" + objectName, content, contentType, "");
-            if (response.statusCode() / 100 != 2) throw new IllegalStateException("object upload HTTP " + response.statusCode());
-            return "minio://" + bucket + "/" + objectName;
-        } catch (BusinessException ex) {
-            throw ex;
+            ensureCoverReadPolicy();
+            putObjectInternal(objectName, upload);
+            return new StoredObject(objectName, publicBaseUrl + "/" + bucket + "/" + objectName,
+                    upload.safeFileName(), upload.contentType(), upload.size());
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BusinessException("PD50301", "商品封面对象存储不可用");
+        }
+    }
+
+    DownloadedObject downloadDocument(String reference) {
+        String prefix = "minio://" + bucket + "/";
+        if (reference == null || !reference.startsWith(prefix)) {
+            throw new BusinessException("PD40012", "商品资料对象地址无效");
+        }
+        String objectName = reference.substring(prefix.length());
+        if (!objectName.startsWith(PRIVATE_DOCUMENT_PREFIX) || objectName.contains("..") || objectName.contains("\\")) {
+            throw new BusinessException("PD40331", "仅允许下载私有商品资料");
+        }
+        String storedName = objectName.substring(objectName.lastIndexOf('/') + 1);
+        String fileName = storedName.replaceFirst("^[0-9a-fA-F-]{36}-", "");
+        String contentType = contentTypeFor(fileName);
+        try {
+            HttpResponse<byte[]> response = sendForBytes("GET", "/" + bucket + "/" + objectName,
+                    new byte[0], "application/octet-stream", "");
+            if (response.statusCode() == 404) throw new BusinessException("PD40409", "商品资料不存在");
+            if (response.statusCode() / 100 != 2) throw new IllegalStateException("object download HTTP " + response.statusCode());
+            return new DownloadedObject(fileName, contentType, response.body());
+        } catch (BusinessException exception) {
+            throw exception;
         } catch (Exception exception) {
             throw new BusinessException("PD50301", "商品资料对象存储不可用");
         }
     }
 
-    /** Upload cover image and return a browser-reachable HTTP URL. */
-    String uploadCover(long spuId, MultipartFile file) {
-        if (file.isEmpty()) throw new BusinessException("PD40005", "上传文件不能为空");
-        String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
-        String original = file.getOriginalFilename() == null ? "cover.png" : file.getOriginalFilename();
-        String lowerName = original.toLowerCase(Locale.ROOT);
-        if (!COVER_TYPES.contains(contentType)
-                && !(lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".png")
-                || lowerName.endsWith(".webp") || lowerName.endsWith(".gif") || lowerName.endsWith(".svg"))) {
-            throw new BusinessException("PD40006", "封面仅支持 jpg/png/webp/gif/svg");
-        }
-        if (contentType.isBlank() || "application/octet-stream".equals(contentType)) {
-            contentType = guessImageType(lowerName);
-        }
-        String safeName = original.replaceAll("[^a-zA-Z0-9._-]", "_");
-        String objectName = "covers/" + spuId + "/" + UUID.randomUUID() + "-" + safeName;
+    boolean isPrivateDocumentReference(String reference) {
+        return reference != null && reference.startsWith("minio://" + bucket + "/" + PRIVATE_DOCUMENT_PREFIX)
+                && !reference.contains("..") && !reference.contains("\\");
+    }
+
+    private void putObject(String objectName, UploadFileValidator.ValidatedUpload upload, String errorMessage) {
         try {
             ensureBucket();
-            ensureCoverReadPolicy();
-            byte[] content = file.getBytes();
-            HttpResponse<Void> response = send("PUT", "/" + bucket + "/" + objectName, content, contentType, "");
-            if (response.statusCode() / 100 != 2) throw new IllegalStateException("cover upload HTTP " + response.statusCode());
-            return publicBaseUrl + "/" + bucket + "/" + objectName;
-        } catch (BusinessException ex) {
-            throw ex;
+            putObjectInternal(objectName, upload);
+        } catch (BusinessException exception) {
+            throw exception;
         } catch (Exception exception) {
-            throw new BusinessException("PD50301", "商品封面对象存储不可用");
+            throw new BusinessException("PD50301", errorMessage);
+        }
+    }
+
+    private void putObjectInternal(String objectName, UploadFileValidator.ValidatedUpload upload) throws Exception {
+        HttpResponse<Void> response = send("PUT", "/" + bucket + "/" + objectName,
+                upload.content(), upload.contentType(), "");
+        if (response.statusCode() / 100 != 2) {
+            throw new IllegalStateException("object upload HTTP " + response.statusCode());
         }
     }
 
@@ -114,10 +136,7 @@ class DocumentStorageService {
 
     private void ensureCoverReadPolicy() throws Exception {
         if (coverPolicyApplied) return;
-        String policy = """
-                {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/covers/*"]}]}
-                """.formatted(bucket).trim();
-        byte[] body = policy.getBytes(StandardCharsets.UTF_8);
+        byte[] body = coverReadPolicy(bucket).getBytes(StandardCharsets.UTF_8);
         HttpResponse<Void> response = send("PUT", "/" + bucket, body, "application/json", "policy=");
         if (response.statusCode() / 100 != 2 && response.statusCode() != 204) {
             throw new IllegalStateException("bucket policy HTTP " + response.statusCode());
@@ -125,14 +144,27 @@ class DocumentStorageService {
         coverPolicyApplied = true;
     }
 
+    static String coverReadPolicy(String bucket) {
+        return """
+                {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/%s*"]}]}
+                """.formatted(bucket, PUBLIC_COVER_PREFIX).trim();
+    }
+
     private HttpResponse<Void> send(String method, String path, byte[] body, String contentType, String query) throws Exception {
+        return http.send(signedRequest(method, path, body, contentType, query), HttpResponse.BodyHandlers.discarding());
+    }
+
+    private HttpResponse<byte[]> sendForBytes(String method, String path, byte[] body, String contentType, String query) throws Exception {
+        return http.send(signedRequest(method, path, body, contentType, query), HttpResponse.BodyHandlers.ofByteArray());
+    }
+
+    private HttpRequest signedRequest(String method, String path, byte[] body, String contentType, String query) throws Exception {
         Instant now = Instant.now();
         String amzDate = AMZ_DATE.format(now);
         String date = DATE.format(now);
         String payloadHash = sha256(body);
         String host = endpoint.getAuthority();
         String canonicalQuery = query == null ? "" : query;
-        // For ?policy= MinIO expects empty value; canonical query is "policy="
         String canonicalHeaders = "content-type:" + contentType + "\n" + "host:" + host + "\n"
                 + "x-amz-content-sha256:" + payloadHash + "\n" + "x-amz-date:" + amzDate + "\n";
         String signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
@@ -152,24 +184,22 @@ class DocumentStorageService {
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofByteArray(body);
         String uri = endpoint.resolve(path).toString();
-        if (!canonicalQuery.isBlank()) {
-            uri = uri + "?" + canonicalQuery;
-        }
-        HttpRequest request = HttpRequest.newBuilder(URI.create(uri)).method(method, publisher)
+        if (!canonicalQuery.isBlank()) uri += "?" + canonicalQuery;
+        return HttpRequest.newBuilder(URI.create(uri)).method(method, publisher)
                 .header("Content-Type", contentType)
                 .header("x-amz-content-sha256", payloadHash)
                 .header("x-amz-date", amzDate)
                 .header("Authorization", authorization)
                 .build();
-        return http.send(request, HttpResponse.BodyHandlers.discarding());
     }
 
-    private static String guessImageType(String name) {
-        if (name.endsWith(".png")) return "image/png";
-        if (name.endsWith(".webp")) return "image/webp";
-        if (name.endsWith(".gif")) return "image/gif";
-        if (name.endsWith(".svg")) return "image/svg+xml";
-        return "image/jpeg";
+    private static String contentTypeFor(String fileName) {
+        String lower = fileName.toLowerCase();
+        if (lower.endsWith(".pdf")) return "application/pdf";
+        if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (lower.endsWith(".txt")) return "text/plain";
+        throw new BusinessException("PD40012", "商品资料文件类型无效");
     }
 
     private static String sha256(byte[] value) throws Exception {
@@ -180,5 +210,11 @@ class DocumentStorageService {
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(key, "HmacSHA256"));
         return mac.doFinal(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    record StoredObject(String objectPath, String reference, String fileName, String contentType, long size) {
+    }
+
+    record DownloadedObject(String fileName, String contentType, byte[] content) {
     }
 }
