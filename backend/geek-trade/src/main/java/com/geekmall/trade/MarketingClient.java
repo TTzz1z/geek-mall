@@ -3,6 +3,7 @@ package com.geekmall.trade;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.geekmall.common.api.BusinessException;
+import com.geekmall.common.web.InternalRestClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -20,7 +21,7 @@ class MarketingClient {
     private final String internalKey;
 
     MarketingClient(@Value("${geek.marketing-service-url}") String url, @Value("${geek.internal-key}") String internalKey, ObjectMapper mapper) {
-        this.client = RestClient.create(url);
+        this.client = InternalRestClient.create(url);
         this.internalKey = internalKey;
         this.mapper = mapper;
     }
@@ -58,7 +59,7 @@ class MarketingClient {
         try {
             return mapper.convertValue(action.get().path("data"), Map.class);
         } catch (RestClientResponseException e) {
-            throw new BusinessException("TR50303", "营销服务调用失败");
+            throw new BusinessException(e.getStatusCode().value() == 409 ? "TR40923" : "TR50303", "营销服务调用失败");
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
@@ -74,7 +75,7 @@ class MemberClient {
     private final String internalKey;
 
     MemberClient(@Value("${geek.member-service-url}") String url, @Value("${geek.internal-key}") String internalKey, ObjectMapper mapper) {
-        this.client = RestClient.create(url);
+        this.client = InternalRestClient.create(url);
         this.internalKey = internalKey;
         this.mapper = mapper;
     }
@@ -103,7 +104,7 @@ class MemberClient {
         try {
             return mapper.convertValue(action.get().path("data"), Map.class);
         } catch (RestClientResponseException e) {
-            throw new BusinessException("TR50304", "会员服务调用失败");
+            throw new BusinessException(e.getStatusCode().value() == 409 ? "TR40924" : "TR50304", "会员服务调用失败");
         } catch (Exception e) {
             throw new BusinessException("TR50304", "会员服务暂时不可用");
         }

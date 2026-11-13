@@ -14,6 +14,10 @@
         "payment.payment.succeeded.v1",
         "trade.order.cancelled.v1",
         "inventory.stock.deducted.v1",
+        "inventory.stock.reserved.v1",
+        "inventory.stock.released.v1",
+        "inventory.fulfillment.status-changed.v1",
+        "marketing.seckill.order.v1",
         "aftersale.refund.completed.v1"
       ]
     },

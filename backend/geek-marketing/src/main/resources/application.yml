@@ -7,6 +7,10 @@ spring:
     password: ${MYSQL_PASSWORD:CHANGE_ME_MYSQL_PASSWORD}
   flyway.locations: classpath:db/migration
   rabbitmq:
+    publisher-returns: true
+    template.mandatory: true
+    connection-timeout: 3s
+    publisher-confirm-type: correlated
     host: ${RABBITMQ_HOST:localhost}
     username: ${RABBITMQ_USER:geek}
     password: ${RABBITMQ_PASSWORD:CHANGE_ME_RABBITMQ_PASSWORD}

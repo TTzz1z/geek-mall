@@ -51,22 +51,26 @@ class SettlementController {
                                                     @Valid @RequestBody OrderCompleted body,
                                                     HttpServletRequest r) {
         requireInternal(key);
+        lockOrderItem(body.orderItemId());
         BigDecimal rate = resolveRate(body.merchantId());
         BigDecimal commission = SettlementCalculator.commission(body.income(), rate);
         long id = DistributedId.next();
         Instant now = Instant.now();
-        Integer exists = jdbc.queryForObject("SELECT COUNT(1) FROM settlement_pending_item WHERE order_item_id=?", Integer.class, body.orderItemId());
-        if (exists != null && exists > 0) {
+        if (!jdbc.queryForList("SELECT id FROM settlement_pending_item WHERE order_item_id=? FOR UPDATE", body.orderItemId()).isEmpty()) {
             return ok(Map.of("status", "IDEMPOTENT", "orderItemId", body.orderItemId()), r);
         }
+        BigDecimal refund = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(amount),0) FROM settlement_refund_application WHERE order_item_id=?
+                """, BigDecimal.class, body.orderItemId());
+        String status = refund.signum() > 0 && refund.compareTo(body.income()) >= 0 ? "REFUNDED" : "PENDING";
         jdbc.update("""
                 INSERT INTO settlement_pending_item(id,merchant_id,order_no,order_item_id,income,commission,refund_amount,status,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,'0.00','PENDING',?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
                 """, id, body.merchantId(), body.orderNo(), body.orderItemId(), body.income(), commission,
-                Timestamp.from(now), Timestamp.from(now));
+                refund, status, Timestamp.from(now), Timestamp.from(now));
         bumpMetric("GMV", body.income());
         bumpMetric("ORDER_COUNT", BigDecimal.ONE);
-        return ok(Map.of("pendingId", id, "commission", commission, "status", "PENDING"), r);
+        return ok(Map.of("pendingId", id, "commission", commission, "status", status), r);
     }
 
     @PostMapping("/internal/settlement/refund")
@@ -75,19 +79,60 @@ class SettlementController {
                                                   @Valid @RequestBody RefundBody body,
                                                   HttpServletRequest r) {
         requireInternal(key);
+        lockOrderItem(body.orderItemId());
+        var previous = jdbc.queryForList("""
+                SELECT order_item_id,amount FROM settlement_refund_application WHERE refund_no=? FOR UPDATE
+                """, body.refundNo());
+        if (!previous.isEmpty()) {
+            var applied = previous.getFirst();
+            if (((Number) applied.get("order_item_id")).longValue() != body.orderItemId()
+                    || ((BigDecimal) applied.get("amount")).compareTo(body.refundAmount()) != 0) {
+                throw new BusinessException("ST40904", "退款编号已用于其他请求");
+            }
+            return ok(Map.of("status", "IDEMPOTENT", "orderItemId", body.orderItemId()), r);
+        }
+        jdbc.update("""
+                INSERT INTO settlement_refund_application(refund_no,order_item_id,amount,created_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                """, body.refundNo(), body.orderItemId(), body.refundAmount());
         var rows = jdbc.queryForList("SELECT * FROM settlement_pending_item WHERE order_item_id=? FOR UPDATE", body.orderItemId());
+        bumpMetric("REFUND_AMOUNT", body.refundAmount());
         if (rows.isEmpty()) {
-            return ok(Map.of("status", "IGNORED", "reason", "NO_PENDING"), r);
+            return ok(Map.of("status", "RECORDED", "orderItemId", body.orderItemId()), r);
         }
         Map<String, Object> row = rows.getFirst();
         BigDecimal income = (BigDecimal) row.get("income");
         BigDecimal current = (BigDecimal) row.get("refund_amount");
         BigDecimal next = SettlementCalculator.applyRefund(current, body.refundAmount(), income);
-        String status = next.compareTo(income) >= 0 ? "REFUNDED" : String.valueOf(row.get("status"));
+        String status = String.valueOf(row.get("status"));
+        if ("SETTLED".equals(status)) {
+            updateStatementRefund(body.orderItemId(), next.subtract(current));
+        } else if (next.compareTo(income) >= 0) {
+            status = "REFUNDED";
+        }
         jdbc.update("UPDATE settlement_pending_item SET refund_amount=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 next, status, row.get("id"));
-        bumpMetric("REFUND_AMOUNT", body.refundAmount());
         return ok(Map.of("orderItemId", body.orderItemId(), "refundAmount", next, "status", status), r);
+    }
+
+    private void lockOrderItem(long itemId) {
+        jdbc.update("""
+                INSERT INTO settlement_order_item_lock(order_item_id) VALUES(?)
+                ON DUPLICATE KEY UPDATE order_item_id=order_item_id
+                """, itemId);
+    }
+
+    private void updateStatementRefund(long itemId, BigDecimal delta) {
+        var statement = jdbc.queryForMap("""
+                SELECT s.id,s.income,s.commission,s.refund,s.adjustment
+                FROM settlement_statement s JOIN settlement_statement_item i ON i.statement_id=s.id
+                WHERE i.source_type='ORDER_ITEM' AND i.source_id=? FOR UPDATE
+                """, String.valueOf(itemId));
+        BigDecimal refund = ((BigDecimal) statement.get("refund")).add(delta);
+        BigDecimal payable = SettlementCalculator.payable((BigDecimal) statement.get("income"),
+                (BigDecimal) statement.get("commission"), refund, (BigDecimal) statement.get("adjustment"));
+        jdbc.update("UPDATE settlement_statement SET refund=?,payable=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                refund, payable, statement.get("id"));
     }
 
     @PostMapping("/merchant/settlements/generate")
@@ -490,7 +535,8 @@ class SettlementController {
 
     record OrderCompleted(@NotNull Long merchantId, @NotBlank String orderNo, @NotNull Long orderItemId,
                           @NotNull @DecimalMin("0.01") BigDecimal income) {}
-    record RefundBody(@NotNull Long orderItemId, @NotNull @DecimalMin("0.01") BigDecimal refundAmount) {}
+    record RefundBody(@NotBlank String refundNo, @NotNull Long orderItemId,
+                      @NotNull @DecimalMin("0.01") BigDecimal refundAmount) {}
     record WithdrawBody(@NotNull @DecimalMin("0.01") BigDecimal amount, String bankSnapshot) {}
     record TitleBody(@NotBlank String titleType, @NotBlank String title, String taxNo) {}
     record InvoiceBody(@NotBlank String orderNo, @NotNull Long titleId, @NotNull @DecimalMin("0.01") BigDecimal amount) {}

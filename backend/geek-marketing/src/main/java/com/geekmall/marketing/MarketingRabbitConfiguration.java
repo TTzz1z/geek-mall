@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 class MarketingRabbitConfiguration {
     static final String EXCHANGE = "geek.domain.events";
-    static final String SECKILL_QUEUE = "marketing.seckill.order.q";
+    static final String SECKILL_QUEUE = "trade.seckill.order.q";
     static final String SECKILL_ROUTING = "marketing.seckill.order.v1";
     static final String TRADE_CREATE_ROUTING = "trade.seckill.create.v1";
 

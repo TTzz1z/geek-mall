@@ -9,6 +9,10 @@ spring:
     enabled: true
     locations: classpath:db/migration
   rabbitmq:
+    publisher-returns: true
+    template.mandatory: true
+    connection-timeout: 3s
+    publisher-confirm-type: correlated
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USER:geek}

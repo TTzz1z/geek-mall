@@ -52,8 +52,22 @@ class PromotionService {
 
     @Transactional
     Map<String, Object> freezeCoupon(String orderNo, long userId, long userCouponId, BigDecimal amount) {
-        var old = jdbc.queryForList("SELECT status FROM marketing_coupon_reservation WHERE order_no=?", orderNo);
-        if (!old.isEmpty()) return Map.of("orderNo", orderNo, "idempotentReplay", true);
+        var coupons = jdbc.queryForList("""
+                SELECT id FROM marketing_user_coupon WHERE id=? AND user_id=? FOR UPDATE
+                """, userCouponId, userId);
+        if (coupons.isEmpty()) throw new BusinessException("MK40907", "优惠券冻结失败");
+        var old = jdbc.queryForList("""
+                SELECT status,user_coupon_id,amount FROM marketing_coupon_reservation WHERE order_no=? FOR UPDATE
+                """, orderNo);
+        if (!old.isEmpty()) {
+            var reservation = old.getFirst();
+            if (((Number) reservation.get("user_coupon_id")).longValue() != userCouponId
+                    || ((BigDecimal) reservation.get("amount")).compareTo(amount) != 0
+                    || !"FROZEN".equals(reservation.get("status"))) {
+                throw new BusinessException("MK40907", "优惠券冻结请求与已有预留不一致");
+            }
+            return Map.of("orderNo", orderNo, "idempotentReplay", true);
+        }
         int changed = jdbc.update(
                 "UPDATE marketing_user_coupon SET status='FROZEN',freeze_order_no=?,frozen_amount=? WHERE id=? AND user_id=? AND status='UNUSED'",
                 orderNo, amount, userCouponId, userId);

@@ -101,6 +101,10 @@ class InventoryService {
 
     @Transactional
     Map<String, Object> reserve(InventoryController.ReservationRequest request) {
+        jdbc.update("""
+                INSERT INTO inventory_reservation_lock(order_id) VALUES(?)
+                ON DUPLICATE KEY UPDATE order_id=order_id
+                """, request.orderId());
         List<Map<String, Object>> existing = reservations(request.orderNo());
         if (!existing.isEmpty()) return Map.of("orderNo", request.orderNo(), "reservationNo", "RS" + request.orderId(), "idempotentReplay", true, "allocations", existing);
 
@@ -162,6 +166,14 @@ class InventoryService {
             if (stockChanged == 0) throw new BusinessException("IV40903", "预占库存扣减状态异常");
             stockLog(((Number) row.get("merchant_id")).longValue(), ((Number) row.get("warehouse_id")).longValue(), ((Number) row.get("sku_id")).longValue(), "DEDUCT", orderNo, -quantity, -quantity);
             affected++;
+        }
+        if (affected == 0) {
+            var rows = jdbc.queryForList("""
+                    SELECT status FROM inventory_stock_reservation WHERE order_no=? FOR UPDATE
+                    """, String.class, orderNo);
+            if (rows.isEmpty() || rows.stream().anyMatch(status -> !"DEDUCTED".equals(status))) {
+                throw new BusinessException("IV40904", "没有可扣减的有效库存预占");
+            }
         }
         return Map.of("orderNo", orderNo, "deducted", affected, "idempotentReplay", affected == 0);
     }

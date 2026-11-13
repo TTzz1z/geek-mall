@@ -26,6 +26,7 @@ class InventoryReservationConcurrencyTest {
         JdbcDataSource ds = new JdbcDataSource();
         ds.setURL("jdbc:h2:mem:inventory_concurrency;MODE=MySQL;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE inventory_reservation_lock(order_id BIGINT PRIMARY KEY)");
         jdbc.execute("CREATE TABLE inventory_warehouse(id BIGINT PRIMARY KEY,warehouse_code VARCHAR(32),warehouse_name VARCHAR(128),region_code VARCHAR(32),priority INT,status VARCHAR(32))");
         jdbc.execute("CREATE TABLE inventory_sku_stock(id BIGINT PRIMARY KEY,merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,physical_qty INT,locked_qty INT,defective_qty INT,version INT,updated_at TIMESTAMP)");
         jdbc.execute("CREATE TABLE inventory_stock_reservation(id BIGINT PRIMARY KEY,reservation_no VARCHAR(64),order_id BIGINT,order_no VARCHAR(64),merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,quantity INT,status VARCHAR(32),expires_at TIMESTAMP,created_at TIMESTAMP,updated_at TIMESTAMP,UNIQUE(order_id,warehouse_id,sku_id))");

@@ -122,22 +122,19 @@ class SeckillOrderService {
         }
     }
 
-    void onTimeoutCancel(String orderNo) {
+    void onTimeoutCancel(String orderNo) throws com.fasterxml.jackson.core.JsonProcessingException {
         var rows = jdbc.queryForList(
                 "SELECT d.snapshot_json FROM trade_order_discount d JOIN trade_order o ON o.id=d.order_id WHERE o.order_no=? AND d.discount_type='SECKILL'",
                 orderNo);
         if (rows.isEmpty()) {
             return;
         }
-        try {
-            var node = new ObjectMapper().readTree(String.valueOf(rows.getFirst().get("snapshot_json")));
-            marketing.releaseSeckill(node.get("sessionId").asLong(), node.get("skuId").asLong(),
-                    jdbc.queryForObject("SELECT user_id FROM trade_order WHERE order_no=?", Long.class, orderNo),
-                    jdbc.queryForObject(
-                            "SELECT quantity FROM trade_order_item i JOIN trade_order o ON o.id=i.order_id WHERE o.order_no=? LIMIT 1",
-                            Integer.class, orderNo));
-        } catch (Exception ignored) {
-        }
+        var node = new ObjectMapper().readTree(String.valueOf(rows.getFirst().get("snapshot_json")));
+        marketing.releaseSeckill(node.get("sessionId").asLong(), node.get("skuId").asLong(),
+                jdbc.queryForObject("SELECT user_id FROM trade_order WHERE order_no=?", Long.class, orderNo),
+                jdbc.queryForObject(
+                        "SELECT quantity FROM trade_order_item i JOIN trade_order o ON o.id=i.order_id WHERE o.order_no=? LIMIT 1",
+                        Integer.class, orderNo));
     }
 
     private void scheduleRelease(String orderNo, String error) {

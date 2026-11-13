@@ -64,8 +64,17 @@ class MemberController {
         requireInternal(key);
         if (points <= 0) throw new BusinessException("MB40001", "积分必须为正数");
         ensure(userId);
-        var old = jdbc.queryForList("SELECT status FROM member_point_reservation WHERE order_no=?", orderNo);
-        if (!old.isEmpty()) return ok(Map.of("orderNo", orderNo, "points", points, "idempotentReplay", true), r);
+        jdbc.queryForObject("SELECT user_id FROM member_profile WHERE user_id=? FOR UPDATE", Long.class, userId);
+        var old = jdbc.queryForList("SELECT user_id,points,status FROM member_point_reservation WHERE order_no=? FOR UPDATE", orderNo);
+        if (!old.isEmpty()) {
+            var reservation = old.getFirst();
+            if (((Number) reservation.get("user_id")).longValue() != userId
+                    || ((Number) reservation.get("points")).intValue() != points
+                    || !"FROZEN".equals(reservation.get("status"))) {
+                throw new BusinessException("MB40902", "积分冻结请求与已有预留不一致");
+            }
+            return ok(Map.of("orderNo", orderNo, "points", points, "idempotentReplay", true), r);
+        }
         int changed = jdbc.update(
                 "UPDATE member_profile SET point_balance=point_balance-?,frozen_points=frozen_points+?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND point_balance>=?",
                 points, points, userId, points);
