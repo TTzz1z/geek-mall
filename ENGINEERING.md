@@ -127,6 +127,8 @@ docker compose up -d --build
 
 独立红队用例位于 `e2e/ai-redteam`。设置隔离环境的 `AI_REDTEAM_URL` 和普通用户的 `AI_REDTEAM_TOKEN`，运行 `npx --yes promptfoo@0.125.1 eval --config e2e/ai-redteam/promptfooconfig.yaml --no-cache`。
 
+Trivy 使用同一份漏洞库扫描当前版本和基准提交。PR 以目标分支提交为基准，推送以前一个提交为基准。新出现的 HIGH、CRITICAL 以及从 HIGH 升为 CRITICAL 的结果会阻断 CI。
+
 ## 可观测性与运维
 
 `observability/` 保存 Prometheus 抓取/告警和 Grafana provisioning/dashboard。`scripts/observability-up.ps1`、`backup.ps1|sh`、`restore.ps1|sh`、`backup-restore-drill.ps1` 提供本地演示入口。

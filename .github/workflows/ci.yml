@@ -97,6 +97,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Validate Compose definitions
         run: |
           docker compose -f docker-compose.yml config --quiet
@@ -118,11 +120,54 @@ jobs:
               print('PASS', p.name)
           sys.exit(fail)
           PY
-      - name: Dependency vulnerability scan
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Prepare vulnerability scan baseline
+        id: trivy-baseline
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" =~ ^0+$ ]]; then
+            printf '{"Results":[]}\n' > "$RUNNER_TEMP/trivy-base.json"
+          else
+            git worktree add --detach "$RUNNER_TEMP/trivy-base" "$BASE_SHA"
+            mvn -B -ntp -f "$RUNNER_TEMP/trivy-base/backend/pom.xml" -DskipTests install
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          fi
+          mvn -B -ntp -f backend/pom.xml -DskipTests install
+      - name: Scan baseline dependencies
+        if: steps.trivy-baseline.outputs.available == 'true'
         uses: aquasecurity/trivy-action@v0.36.0
         with:
+          version: v0.76.2
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/trivy-base
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          format: json
+          output: ${{ runner.temp }}/trivy-base.json
+          exit-code: '0'
+          skip-dirs: '**/target'
+        env:
+          TRIVY_OFFLINE_SCAN: 'true'
+      - name: Scan current dependencies
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.76.2
           scan-type: fs
           scan-ref: .
           scanners: vuln
           severity: CRITICAL,HIGH
-          exit-code: '1'
+          format: json
+          output: ${{ runner.temp }}/trivy-head.json
+          exit-code: '0'
+          skip-dirs: '**/target'
+          skip-setup-trivy: ${{ steps.trivy-baseline.outputs.available == 'true' }}
+        env:
+          TRIVY_OFFLINE_SCAN: 'true'
+          TRIVY_SKIP_DB_UPDATE: ${{ steps.trivy-baseline.outputs.available == 'true' }}
+      - name: Block new HIGH and CRITICAL dependency findings
+        run: python3 scripts/trivy-regression-gate.py "$RUNNER_TEMP/trivy-base.json" "$RUNNER_TEMP/trivy-head.json"
