@@ -39,6 +39,14 @@ public class PlanValidator {
             String name = step.name().trim().toLowerCase(Locale.ROOT);
             if (!ToolPolicy.isRegistered(name) && !ToolPolicy.isForbidden(name)) continue;
             Map<String, Object> args = new LinkedHashMap<>(step.args() == null ? Map.of() : step.args());
+            if (!ToolPolicy.isForbidden(name)) {
+                try {
+                    ToolPolicy.validatePlan(name, args);
+                } catch (com.geekmall.common.api.BusinessException invalid) {
+                    cleaned.add(new PlanEnvelope.PlannedTool(name, args, "invalid-arguments"));
+                    continue;
+                }
+            }
             if ("search_products".equals(name)) {
                 applySearchGuards(args, slots, userMessage);
             }

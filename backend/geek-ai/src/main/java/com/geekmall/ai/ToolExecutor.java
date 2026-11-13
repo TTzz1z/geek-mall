@@ -3,6 +3,7 @@ package com.geekmall.ai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.geekmall.common.api.BusinessException;
 import com.geekmall.common.domain.DistributedId;
+import com.geekmall.common.web.InternalRestClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -31,20 +32,14 @@ public class ToolExecutor {
         this.rag = rag;
         this.mapper = mapper;
         this.jdbc = jdbc;
-        this.productClient = RestClient.create(productUrl);
-        this.tradeClient = RestClient.create(tradeUrl);
-        this.searchClient = RestClient.create(searchUrl);
-        this.aftersaleClient = RestClient.create(aftersaleUrl);
+        this.productClient = InternalRestClient.create(productUrl);
+        this.tradeClient = InternalRestClient.create(tradeUrl);
+        this.searchClient = InternalRestClient.create(searchUrl);
+        this.aftersaleClient = InternalRestClient.create(aftersaleUrl);
     }
 
     public Map<String, Object> execute(String toolName, Map<String, Object> args, long userId, String userToken) {
-        RiskLevel risk = ToolPolicy.riskOf(toolName);
-        if (risk.forbidden()) {
-            throw new BusinessException("AI40301", "AI 工具无权限: " + toolName + "（禁止直接支付/提交订单/正式退款等）");
-        }
-        if (!ToolPolicy.isRegistered(toolName)) {
-            throw new BusinessException("AI40401", "未注册工具: " + toolName);
-        }
+        ToolPolicy.authorize(toolName, args, userId, false);
         Map<String, Object> a = args == null ? Map.of() : args;
         return switch (toolName) {
             case "search_products" -> searchProducts(a);
@@ -81,11 +76,24 @@ public class ToolExecutor {
                     "message", "草稿需人工确认后才能提交审核");
             case "create_ticket_draft" -> requireUser(userId, saveDraft(userId, "TICKET", a,
                     Map.of("status", "DRAFT", "title", a.getOrDefault("title", "客服工单草稿"))));
-            case "cancel_paid_order_draft", "modify_address_draft" -> requireUser(userId, Map.of(
-                    "status", "NEEDS_CONFIRMATION",
-                    "message", "L3 动作仅生成草稿/跳转，不能由 AI 直接执行"));
             default -> throw new BusinessException("AI40401", "未实现工具: " + toolName);
         };
+    }
+
+    String executeApprovedDraft(String tool, Map<String, Object> args, long userId, long approvalId) {
+        ToolPolicy.authorize(tool, args, userId, true);
+        String draftType = switch (tool) {
+            case "cancel_paid_order_draft" -> "CANCEL_PAID_ORDER";
+            case "modify_address_draft" -> "MODIFY_ADDRESS";
+            default -> throw new BusinessException("AI40305", "该工具无法通过审批执行");
+        };
+        String draftNo = "AICF" + approvalId;
+        jdbc.update("""
+                INSERT INTO ai_business_draft(id,draft_no,user_id,draft_type,status,payload_json,created_at,updated_at)
+                VALUES(?,?,?,?,'DRAFT',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                ON DUPLICATE KEY UPDATE draft_no=draft_no
+                """, DistributedId.next(), draftNo, userId, draftType, json(args));
+        return draftNo;
     }
 
     private Map<String, Object> searchProducts(Map<String, Object> a) {

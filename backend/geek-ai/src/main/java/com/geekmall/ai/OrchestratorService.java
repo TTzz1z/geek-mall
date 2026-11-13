@@ -25,26 +25,31 @@ public class OrchestratorService {
     private final ModelGateway modelGateway;
     private final HybridRagService rag;
     private final ToolExecutor tools;
+    private final ToolApprovalService approvals;
     private final PlannerGateway plannerGateway;
     private final PlanValidator planValidator;
     private final ContextPacker contextPacker;
     private final boolean replanEnabled;
+    private final int toolBudget;
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     public OrchestratorService(JdbcTemplate jdbc, ObjectMapper mapper, ModelGateway modelGateway,
-                               HybridRagService rag, ToolExecutor tools,
+                               HybridRagService rag, ToolExecutor tools, ToolApprovalService approvals,
                                PlannerGateway plannerGateway, PlanValidator planValidator,
                                ContextPacker contextPacker,
-                               @Value("${geek.llm.replan-enabled:true}") boolean replanEnabled) {
+                               @Value("${geek.llm.replan-enabled:true}") boolean replanEnabled,
+                               @Value("${geek.llm.planner-max-tool-steps:5}") int toolBudget) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.modelGateway = modelGateway;
         this.rag = rag;
         this.tools = tools;
+        this.approvals = approvals;
         this.plannerGateway = plannerGateway;
         this.planValidator = planValidator;
         this.contextPacker = contextPacker;
         this.replanEnabled = replanEnabled;
+        this.toolBudget = Math.max(1, Math.min(8, toolBudget));
     }
 
     @Transactional
@@ -123,38 +128,16 @@ public class OrchestratorService {
         return data;
     }
 
-    @Transactional
     public Map<String, Object> confirmTool(String confirmationToken, AuthPrincipal user) {
-        var rows = jdbc.queryForList("SELECT * FROM ai_confirmation WHERE confirmation_token=? FOR UPDATE", confirmationToken);
-        if (rows.isEmpty()) throw new BusinessException("AI40402", "确认令牌不存在");
-        Map<String, Object> c = rows.getFirst();
-        if (((Number) c.get("user_id")).longValue() != user.userId()) {
-            throw new BusinessException("AI40303", "确认令牌不属于当前用户");
-        }
-        if (!"PENDING".equals(String.valueOf(c.get("status")))) {
-            throw new BusinessException("AI40901", "确认令牌已使用或失效");
-        }
-        if (((Timestamp) c.get("expires_at")).toInstant().isBefore(Instant.now())) {
-            jdbc.update("UPDATE ai_confirmation SET status='EXPIRED' WHERE id=?", c.get("id"));
-            throw new BusinessException("AI40902", "确认令牌已过期");
-        }
-        jdbc.update("UPDATE ai_confirmation SET status='CONFIRMED' WHERE id=?", c.get("id"));
-        jdbc.update("UPDATE ai_tool_call SET status='CONFIRMED' WHERE id=?", c.get("tool_call_id"));
-        return Map.of("confirmationToken", confirmationToken, "status", "CONFIRMED",
-                "message", "已记录用户确认。正式支付/退款/提交订单仍须在业务页面完成，AI 不会代为执行。");
+        return approvals.confirm(confirmationToken, user.userId());
     }
 
-    @Transactional
     public Map<String, Object> cancelTool(String confirmationToken, AuthPrincipal user) {
-        var rows = jdbc.queryForList("SELECT * FROM ai_confirmation WHERE confirmation_token=? FOR UPDATE", confirmationToken);
-        if (rows.isEmpty()) throw new BusinessException("AI40402", "确认令牌不存在");
-        Map<String, Object> c = rows.getFirst();
-        if (((Number) c.get("user_id")).longValue() != user.userId()) {
-            throw new BusinessException("AI40303", "确认令牌不属于当前用户");
-        }
-        jdbc.update("UPDATE ai_confirmation SET status='CANCELLED' WHERE id=?", c.get("id"));
-        jdbc.update("UPDATE ai_tool_call SET status='CANCELLED' WHERE id=?", c.get("tool_call_id"));
-        return Map.of("confirmationToken", confirmationToken, "status", "CANCELLED");
+        return approvals.cancel(confirmationToken, user.userId());
+    }
+
+    public Map<String, Object> toolApprovalStatus(String confirmationToken, AuthPrincipal user) {
+        return approvals.status(confirmationToken, user.userId());
     }
 
     @Transactional
@@ -274,7 +257,7 @@ public class OrchestratorService {
         String answerUser = "用户原话：" + message + "\n\n工具结果摘要草稿：\n" + draft;
         ModelGateway.CompletionResult completion = modelGateway.completeAnswer(answerSystem, answerUser, convId);
         degraded = completion.degraded();
-        AnswerGrounding.Result grounded = AnswerGrounding.ground(completion.text(), draft, toolResults);
+        AnswerGrounding.Result grounded = AnswerGrounding.ground(degraded ? null : completion.text(), draft, toolResults);
         String finalText = grounded.text();
         if (grounded.usedDraft() && degraded) {
             finalText = finalText + (finalText.contains("模型已降级") ? "" : "\n\n（模型已降级）");
@@ -315,6 +298,7 @@ public class OrchestratorService {
                                      AuthPrincipal user, String authorization,
                                      Map<String, Object> turnSlots, String message) {
         for (PlanEnvelope.PlannedTool plan : planned) {
+            if (toolResults.size() + confirmations.size() >= toolBudget) break;
             RiskLevel risk = ToolPolicy.riskOf(plan.name());
             long toolId = DistributedId.next();
             jdbc.update("""
@@ -335,28 +319,32 @@ public class OrchestratorService {
                 continue;
             }
 
-            if (risk.requiresConfirmation()) {
-                String token = "CFT" + DistributedId.next();
-                jdbc.update("""
-                        INSERT INTO ai_confirmation(id,tool_call_id,confirmation_token,user_id,expires_at,status,created_at)
-                        VALUES(?,?,?,?,?,'PENDING',?)
-                        """, DistributedId.next(), toolId, token, user.userId(),
-                        Timestamp.from(now.plusSeconds(600)), Timestamp.from(now));
-                jdbc.update("UPDATE ai_tool_call SET status='AWAITING_CONFIRMATION', result_summary=? WHERE id=?",
-                        "awaiting user confirmation", toolId);
-                Map<String, Object> conf = Map.of(
-                        "toolCallId", toolId,
-                        "toolName", plan.name(),
-                        "confirmationToken", token,
-                        "riskLevel", risk.name(),
-                        "message", "该操作需要用户确认，AI 不会直接执行");
-                confirmations.add(conf);
-                sink.emit(List.of(event("confirmation.required", conf)));
-                continue;
-            }
-
             try {
+                if ("invalid-arguments".equals(plan.reason())) {
+                    throw new BusinessException("AI40014", "工具参数不符合 Schema");
+                }
+                ToolPolicy.validatePlan(plan.name(), plan.args());
+                if ("query_operation_metrics".equals(plan.name())
+                        && Collections.disjoint(user.roles(), Set.of("SYSTEM_ADMIN", "OPS", "PRODUCT_ADMIN"))) {
+                    throw new BusinessException("AI40305", "当前角色无权查询运营指标");
+                }
                 Map<String, Object> resolvedArgs = enrichToolArgs(plan, toolResults, turnSlots, message);
+                if (risk.requiresConfirmation()) {
+                    ToolPolicy.authorize(plan.name(), resolvedArgs, user.userId(), true);
+                    String token = approvals.request(toolId, user.userId());
+                    jdbc.update("UPDATE ai_tool_call SET status='AWAITING_CONFIRMATION' WHERE id=?", toolId);
+                    Map<String, Object> conf = Map.of(
+                            "toolCallId", toolId,
+                            "toolName", plan.name(),
+                            "confirmationToken", token,
+                            "riskLevel", risk.name(),
+                            "arguments", resolvedArgs,
+                            "message", "确认后生成草稿");
+                    confirmations.add(conf);
+                    sink.emit(List.of(event("confirmation.required", conf)));
+                    continue;
+                }
+
                 Map<String, Object> result = tools.execute(plan.name(), resolvedArgs, user.userId(), authorization);
                 String summary = truncate(json(result), 1800);
                 jdbc.update("UPDATE ai_tool_call SET status='SUCCESS', result_summary=? WHERE id=?", summary, toolId);

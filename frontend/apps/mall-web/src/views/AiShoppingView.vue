@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { PhPaperPlaneRight as Send, PhSparkle as Sparkle, PhWarning as Warning } from '@phosphor-icons/vue'
 import { mallApi } from '../api'
@@ -247,12 +247,26 @@ async function send() {
   }
 }
 
-async function confirm(token: string) {
+const pendingApprovals = reactive(new Set<string>())
+
+async function confirm(approval: Record<string, unknown>) {
+  const token = String(approval.confirmationToken)
+  if (pendingApprovals.has(token)) return
+  pendingApprovals.add(token)
+  const path = `/api/v1/ai/tool-calls/${encodeURIComponent(token)}`
   try {
-    const data = await mallApi.request<{ message: string }>(`/api/v1/ai/tool-calls/${token}/confirm`, { method: 'POST' })
+    let data = await mallApi.request<{ message: string; status: string }>(`${path}/confirm`, { method: 'POST' })
+    for (let attempt = 0; data.status === 'CONFIRMED' && attempt < 8; attempt++) {
+      await new Promise(resolve => window.setTimeout(resolve, 750))
+      data = await mallApi.request<{ message: string; status: string }>(path)
+    }
+    approval.status = data.status
+    approval.message = data.message
     items.value.push({ role: 'system', content: data.message })
   } catch (e) {
     items.value.push({ role: 'system', content: e instanceof Error ? e.message : '确认失败' })
+  } finally {
+    pendingApprovals.delete(token)
   }
 }
 
@@ -318,9 +332,19 @@ onMounted(async () => {
             </li>
           </ul>
           <div v-if="m.confirmations?.length" class="confirm">
-            <button v-for="(c, i) in m.confirmations" :key="i" type="button" @click="confirm(String(c.confirmationToken))">
-              确认 {{ c.toolName }}
-            </button>
+            <div v-for="c in m.confirmations" :key="String(c.confirmationToken)">
+              <dl v-if="c.arguments">
+                <template v-for="(value, key) in (c.arguments as Record<string, unknown>)" :key="key">
+                  <dt>{{ { orderNo: '订单号', addressId: '地址编号', reason: '原因' }[String(key)] ?? key }}</dt>
+                  <dd>{{ value }}</dd>
+                </template>
+              </dl>
+              <button v-if="!c.status || c.status === 'CONFIRMED'" type="button"
+                      :disabled="pendingApprovals.has(String(c.confirmationToken))" @click="confirm(c)">
+                {{ c.status === 'CONFIRMED' ? '查询执行结果' : (c.toolName === 'modify_address_draft' ? '确认生成改地址草稿' : '确认生成取消订单草稿') }}
+              </button>
+              <p v-else>{{ c.message }}</p>
+            </div>
           </div>
         </article>
       </div>

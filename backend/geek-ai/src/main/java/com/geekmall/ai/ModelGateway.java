@@ -82,7 +82,7 @@ public class ModelGateway {
             RemoteCompletion remote = null;
             String text;
             if (!remoteConfigured()) {
-                text = localComplete(systemPrompt, userPrompt);
+                text = localComplete();
             } else {
                 remote = openAiCompatibleChat(systemPrompt, userPrompt, temperature, llmTimeoutMs, false);
                 text = remote.text();
@@ -94,11 +94,11 @@ public class ModelGateway {
             return new CompletionResult(model, text, usage.promptTokens(), usage.completionTokens(), usage.estimated(), !remoteConfigured());
         } catch (Exception primaryError) {
             model = fallback;
-            String text = localComplete(systemPrompt, userPrompt) + "\n\n（已降级至 " + fallback + "）";
+            String text = localComplete();
             int promptTokens = estimateTokens(systemPrompt + userPrompt);
             int completionTokens = estimateTokens(text);
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
-                    promptTokens, 0, true, "FAILED", "scene=" + scene + ";" + primaryError.getMessage());
+                    promptTokens, 0, true, "FAILED", "scene=" + scene + ";" + primaryError.getClass().getSimpleName());
             log(requestId + "-fb", conversationId, model, (int) (System.currentTimeMillis() - start),
                     promptTokens, completionTokens, true, "SUCCESS", "scene=" + scene + ";fallback");
             return new CompletionResult(model, text, promptTokens, completionTokens, true, true);
@@ -129,7 +129,7 @@ public class ModelGateway {
         } catch (Exception ex) {
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
                     estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED",
-                    "scene=" + scene + ";" + (ex.getMessage() == null ? "planner-failed" : ex.getMessage()));
+                    "scene=" + scene + ";" + ex.getClass().getSimpleName());
             throw ex;
         }
     }
@@ -176,8 +176,8 @@ public class ModelGateway {
                 usage.path("completion_tokens").asInt(), hasUsage);
     }
 
-    private String localComplete(String systemPrompt, String userPrompt) {
-        return "[模型回复·本地降级]\n" + (userPrompt == null ? "" : userPrompt);
+    private String localComplete() {
+        return "模型暂时不可用，请稍后重试。";
     }
 
     private void log(String requestId, Long conversationId, String model, int latency,

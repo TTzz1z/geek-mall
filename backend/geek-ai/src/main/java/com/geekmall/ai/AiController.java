@@ -87,6 +87,14 @@ class AiController {
         return ok(orchestrator.confirmTool(confirmationToken, p), r);
     }
 
+    @GetMapping("/ai/tool-calls/{confirmationToken}")
+    @PreAuthorize("isAuthenticated()")
+    ApiResponse<Map<String, Object>> approvalStatus(@PathVariable String confirmationToken,
+                                                    @AuthenticationPrincipal AuthPrincipal p,
+                                                    HttpServletRequest r) {
+        return ok(orchestrator.toolApprovalStatus(confirmationToken, p), r);
+    }
+
     @PostMapping("/ai/tool-calls/{confirmationToken}/cancel")
     @PreAuthorize("isAuthenticated()")
     ApiResponse<Map<String, Object>> cancel(@PathVariable String confirmationToken,

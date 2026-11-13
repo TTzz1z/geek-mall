@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ModelGatewayTest {
@@ -27,10 +28,11 @@ class ModelGatewayTest {
                 true, "https://example.invalid", " ", "remote-model", 3000);
 
         ModelGateway.CompletionResult result = gateway.complete(
-                "ANSWER", "system", "user", null);
+                "ANSWER", "internal-system-sentinel", "internal-composed-prompt-sentinel", null);
 
         assertTrue(result.degraded());
         assertTrue(result.tokenUsageEstimated());
+        assertFalse(result.text().contains("internal-"));
         assertEquals("ESTIMATED", result.asMap().get("tokenUsageSource"));
     }
 }
