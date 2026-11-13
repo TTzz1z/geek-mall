@@ -1,7 +1,6 @@
 INSERT INTO ai_model_config(id,provider,model_name,model_type,scene,status,config_json) VALUES
  (96001,'GEEK','geek-chat-primary','CHAT','DEFAULT','ENABLED','{"temperature":0.2}'),
- (96002,'GEEK','geek-chat-fallback','CHAT','DEFAULT','ENABLED','{"temperature":0.1}'),
- (96003,'GEEK','geek-local-charhash-64-prototype','LOCAL_VECTOR_PROTOTYPE','RAG','ENABLED','{"dim":64,"embeddingModel":false,"note":"deterministic character-hash prototype"}')
+ (96002,'GEEK','geek-chat-fallback','CHAT','DEFAULT','ENABLED','{"temperature":0.1}')
 ON DUPLICATE KEY UPDATE status=VALUES(status);
 
 INSERT INTO knowledge_base(id,kb_code,name,scope_type,scope_id,status) VALUES

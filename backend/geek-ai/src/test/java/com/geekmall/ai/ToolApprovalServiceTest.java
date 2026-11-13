@@ -29,7 +29,7 @@ class ToolApprovalServiceTest {
         jdbc.update("INSERT INTO ai_tool_call VALUES(2,'cancel_paid_order_draft','{\"orderNo\":\"GM1\"}','PENDING',NULL)");
         var mapper = new ObjectMapper();
         var tx = new DataSourceTransactionManager(ds);
-        var tools = new ToolExecutor(null, mapper, jdbc, "http://localhost", "http://localhost", "http://localhost", "http://localhost");
+        var tools = new ToolExecutor(null, mapper, jdbc, null, "http://localhost", "http://localhost", "http://localhost", "http://localhost");
         var service = new ToolApprovalService(jdbc, mapper, tools, tx);
         String token = service.request(1, 4);
         assertThatThrownBy(() -> service.confirm(token, 5)).isInstanceOf(BusinessException.class);

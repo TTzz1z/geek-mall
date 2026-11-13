@@ -4,8 +4,10 @@ import com.geekmall.common.api.ApiResponse;
 import com.geekmall.common.api.BusinessException;
 import com.geekmall.common.security.AuthPrincipal;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,18 +25,20 @@ class AiController {
     private final OrchestratorService orchestrator;
     private final AiEvalService evalService;
     private final KnowledgeIngestService ingestService;
+    private final RetrievalEvaluation retrievalEvaluation;
     private final JdbcTemplate jdbc;
     private final PlanCache planCache;
     private final PlannerConcurrencyGuard plannerConcurrencyGuard;
     private final String internalKey;
 
     AiController(OrchestratorService orchestrator, AiEvalService evalService,
-                 KnowledgeIngestService ingestService, JdbcTemplate jdbc,
+                 KnowledgeIngestService ingestService, RetrievalEvaluation retrievalEvaluation, JdbcTemplate jdbc,
                  PlanCache planCache, PlannerConcurrencyGuard plannerConcurrencyGuard,
                  @Value("${geek.internal-key}") String internalKey) {
         this.orchestrator = orchestrator;
         this.evalService = evalService;
         this.ingestService = ingestService;
+        this.retrievalEvaluation = retrievalEvaluation;
         this.jdbc = jdbc;
         this.planCache = planCache;
         this.plannerConcurrencyGuard = plannerConcurrencyGuard;
@@ -75,8 +79,30 @@ class AiController {
                       @RequestParam @NotBlank String message,
                       @RequestParam(required = false) String scene,
                       @AuthenticationPrincipal AuthPrincipal p,
-                      HttpServletRequest r) {
+                      HttpServletRequest r, HttpServletResponse response) {
+        streamHeaders(response);
         return orchestrator.streamMessage(conversationNo, message, scene, p, r.getHeader("Authorization"));
+    }
+
+    @PostMapping(value = "/ai/conversations/{conversationNo}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    SseEmitter streamPost(@PathVariable String conversationNo, @Valid @RequestBody MessageBody body,
+                          @AuthenticationPrincipal AuthPrincipal p, HttpServletRequest r, HttpServletResponse response) {
+        streamHeaders(response);
+        return orchestrator.streamMessage(conversationNo, body.message(), body.scene(), p, r.getHeader("Authorization"));
+    }
+
+    private static void streamHeaders(HttpServletResponse response) {
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache");
+    }
+
+    @DeleteMapping("/ai/conversations/{conversationNo}/turns/{turnId}")
+    @PreAuthorize("isAuthenticated()")
+    ApiResponse<Map<String, String>> cancelTurn(@PathVariable String conversationNo, @PathVariable String turnId,
+                                                @AuthenticationPrincipal AuthPrincipal p, HttpServletRequest r) {
+        orchestrator.cancelTurn(conversationNo, turnId, p.userId());
+        return ok(Map.of("status", "CANCELLED"), r);
     }
 
     @PostMapping("/ai/tool-calls/{confirmationToken}/confirm")
@@ -182,6 +208,12 @@ class AiController {
         return ok(evalService.runFixed(p), r);
     }
 
+    @PostMapping("/admin/ai/knowledge/evaluate")
+    @PreAuthorize("hasAnyRole('SYSTEM_ADMIN','OPS')")
+    ApiResponse<Map<String, Object>> evaluateRetrieval(@RequestParam(defaultValue = "5") int k, HttpServletRequest r) {
+        return ok(retrievalEvaluation.evaluate(k), r);
+    }
+
     @PostMapping("/admin/ai/knowledge/ingest")
     @PreAuthorize("hasAnyRole('SYSTEM_ADMIN','OPS')")
     ApiResponse<Map<String, Object>> ingest(@Valid @RequestBody IngestBody body, HttpServletRequest r) {
@@ -213,7 +245,9 @@ class AiController {
     }
 
     record CreateBody(String scene, Map<String, Object> context) {}
-    record MessageBody(@NotBlank String message, String scene) {}
-    record IngestBody(String kbCode, String sourceType, String sourceId, @NotBlank String title,
-                       String mimeType, String fileUrl, String content) {}
+    record MessageBody(@NotBlank @Size(max = 2000) String message, String scene) {}
+    record IngestBody(@Size(max = 64) String kbCode, @Size(max = 64) String sourceType,
+                      @Size(max = 64) String sourceId, @NotBlank @Size(max = 255) String title,
+                      @Size(max = 160) String mimeType, @Size(max = 500) String fileUrl,
+                      @Size(max = 240000) String content) {}
 }

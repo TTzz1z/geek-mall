@@ -43,9 +43,11 @@ public final class AnswerGrounding {
         Matcher spu = SPU_REF.matcher(text);
         Set<Long> badSpus = new LinkedHashSet<>();
         while (spu.find()) {
-            long id = Long.parseLong(spu.group(1));
-            if (!allowed.spuIds.isEmpty() && !allowed.spuIds.contains(id)) {
-                badSpus.add(id);
+            try {
+                long id = Long.parseLong(spu.group(1));
+                if (!allowed.spuIds.contains(id)) badSpus.add(id);
+            } catch (NumberFormatException e) {
+                return new Result(safeDraft, true, false, List.of("invalid_spu"));
             }
         }
         if (!badSpus.isEmpty()) {

@@ -105,7 +105,7 @@ docker compose up -d --build
 
 | 层 | 命令/入口 | 说明 |
 |---|---|---|
-| 后端 | `cd backend; mvn -B -ntp verify` | 单元/集成测试和 Flyway 启动校验 |
+| 后端 | `mvn -B -ntp -f backend/pom.xml -Pintegration verify` | 单元测试与基于 Docker 的 MySQL 8.4、RabbitMQ、Agent 集成测试 |
 | 前端 | `cd frontend; pnpm typecheck; pnpm test; pnpm build` | 类型、Vitest 和构建 |
 | Compose | `docker compose -f docker-compose.yml config --quiet` | 配置展开校验 |
 | 契约 | `scripts/contract-check.ps1` | 事件 schema 与样例 |
@@ -116,6 +116,16 @@ docker compose up -d --build
 | CI | `.github/workflows/ci.yml` | 后端、前端、Compose、契约和 Trivy |
 
 默认 Compose 下应先设置 `$env:E2E_BASE_URL='http://127.0.0.1:8088'`，让 API 验收通过商城 nginx 代理。报告和构建目录均被 Git 忽略，清理后可由命令重新生成。详细断言见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)。
+
+### AI 知识库与评测
+
+上传接口接收 `minio://<MINIO_BUCKET>/<object-key>`。PDF、DOCX、XLSX、PNG、JPEG 和 TIFF 由 Tika 4.2.0 读取和识别，提取到有效正文后写入 `READY`。索引任务独立重试。旧版占位解析记录会被标记为 `REPARSE_REQUIRED`，可用相同来源标识重新入库。商品同步只写商品知识，价格和库存由业务接口提供。商品和平台规则查询分别读取公开的 `PRODUCT` 与 `RULE` 知识库。
+
+配置 `EMBEDDING_URL` 为 OpenAI 兼容接口根路径，例如 `http://embedding:8000/v1`。端点须返回 1024 维向量。未配置时使用 Elasticsearch BM25。对比模型时，分别使用 `Qwen/Qwen3-Embedding-0.6B` 和 `BAAI/bge-m3`，为每个模型设置不同的 `KNOWLEDGE_INDEX`，等待索引任务完成后，以管理员令牌调用 `POST /api/v1/admin/ai/knowledge/evaluate?k=5`。响应包含 Recall@K、MRR 和 nDCG。
+
+本地使用 Elasticsearch 8.17.3 和 Ollama 的 Q8_0 模型，对仓库内的六条标注查询评测。BM25 的 Recall@5、MRR、nDCG@5 均为 1.000。两种混合检索的 Recall@5 和 MRR 均为 1.000，nDCG@5 均为 0.972。这组查询主要用于回归验证。
+
+独立红队用例位于 `e2e/ai-redteam`。设置隔离环境的 `AI_REDTEAM_URL` 和普通用户的 `AI_REDTEAM_TOKEN`，运行 `npx --yes promptfoo@0.125.1 eval --config e2e/ai-redteam/promptfooconfig.yaml --no-cache`。
 
 ## 可观测性与运维
 

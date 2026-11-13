@@ -26,5 +26,37 @@
     "payload": { "type": "object" },
     "occurredAt": { "type": "string" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "eventType": { "const": "payment.payment.succeeded.v1" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["orderNo", "amount", "channel"],
+            "properties": {
+              "orderNo": { "type": "string", "minLength": 1 },
+              "paymentNo": { "type": "string", "minLength": 1 },
+              "amount": { "type": "number", "minimum": 0 },
+              "channel": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "inventory.fulfillment.status-changed.v1" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["orderNo", "status"],
+            "properties": {
+              "orderNo": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["SHIPPED", "COMPLETED"] }
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": true
 }

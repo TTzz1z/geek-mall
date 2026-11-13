@@ -1,0 +1,8 @@
+[
+  {"scope":"PRODUCT","query":"轻薄本支持多快的 USB-C 充电？","relevance":{"SPU-1001":3}},
+  {"scope":"PRODUCT","query":"这台笔记本的内存和固态硬盘规格是什么？","relevance":{"SPU-1001":3}},
+  {"scope":"RULE","query":"买到的数码商品不满意，什么条件下可以无理由退货？","relevance":{"AFTERSALE":3}},
+  {"scope":"RULE","query":"快递退回后怎么申请退款，是否要填写运单号？","relevance":{"AFTERSALE":3}},
+  {"scope":"RULE","query":"购买后什么时候可以申请发票？","relevance":{"PAYMENT":3}},
+  {"scope":"RULE","query":"去哪里确认支付，售后机器人能直接退款吗？","relevance":{"PAYMENT":3,"AFTERSALE":2}}
+]

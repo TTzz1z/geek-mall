@@ -1,4 +1,8 @@
 services:
+  ai:
+    environment:
+      AI_TRACE_SAMPLE_RATE: ${AI_TRACE_SAMPLE_RATE:-1.0}
+      AI_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
   prometheus:
     image: prom/prometheus:v2.54.1
     command:

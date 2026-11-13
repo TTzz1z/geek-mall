@@ -23,8 +23,9 @@ public class ToolExecutor {
     private final RestClient tradeClient;
     private final RestClient searchClient;
     private final RestClient aftersaleClient;
+    private final AiTurnTelemetry telemetry;
 
-    public ToolExecutor(HybridRagService rag, ObjectMapper mapper, JdbcTemplate jdbc,
+    public ToolExecutor(HybridRagService rag, ObjectMapper mapper, JdbcTemplate jdbc, AiTurnTelemetry telemetry,
                         @Value("${geek.product-service-url}") String productUrl,
                         @Value("${geek.trade-service-url}") String tradeUrl,
                         @Value("${geek.search-service-url}") String searchUrl,
@@ -32,13 +33,15 @@ public class ToolExecutor {
         this.rag = rag;
         this.mapper = mapper;
         this.jdbc = jdbc;
+        this.telemetry = telemetry;
         this.productClient = InternalRestClient.create(productUrl);
         this.tradeClient = InternalRestClient.create(tradeUrl);
         this.searchClient = InternalRestClient.create(searchUrl);
         this.aftersaleClient = InternalRestClient.create(aftersaleUrl);
     }
 
-    public Map<String, Object> execute(String toolName, Map<String, Object> args, long userId, String userToken) {
+    public Map<String, Object> execute(String toolName, Map<String, Object> args, long userId, String userToken,
+                                       String knowledgeScope) {
         ToolPolicy.authorize(toolName, args, userId, false);
         Map<String, Object> a = args == null ? Map.of() : args;
         return switch (toolName) {
@@ -50,7 +53,7 @@ public class ToolExecutor {
             }
             case "compare_products" -> compareProducts(a.get("spuIds"));
             case "get_product_knowledge" -> {
-                var cites = rag.retrieve(str(a.get("query"), "参数"), 3);
+                var cites = telemetry.stage("rag", () -> rag.retrieve(str(a.get("query"), "参数"), 3, knowledgeScope));
                 yield Map.of("citations", cites.stream().map(HybridRagService.Citation::asMap).toList(),
                         "evidence", rag.buildEvidence(cites));
             }

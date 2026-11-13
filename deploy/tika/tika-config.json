@@ -1,0 +1,9 @@
+{
+  "server": {},
+  "engines": {
+    "tesseract": {
+      "tesseract-ocr-parser": { "language": "eng", "timeoutMillis": 25000 }
+    }
+  },
+  "text-recognizers": [{ "engine": "tesseract" }]
+}

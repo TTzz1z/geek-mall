@@ -102,7 +102,11 @@ public class PlannerGateway {
             planCache.put(message, sceneHint, slotView, parsed);
             return Optional.of(parsed);
         } catch (Exception ex) {
-            log.warn("planner failed: {}", ex.toString());
+            if (ex instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException();
+            }
+            log.warn("planner failed ({})", ex.getClass().getSimpleName());
             return Optional.empty();
         } finally {
             concurrencyGuard.release();

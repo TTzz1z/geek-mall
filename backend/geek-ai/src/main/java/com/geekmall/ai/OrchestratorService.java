@@ -15,8 +15,13 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import jakarta.annotation.PreDestroy;
 
 @Service
 public class OrchestratorService {
@@ -31,14 +36,18 @@ public class OrchestratorService {
     private final ContextPacker contextPacker;
     private final boolean replanEnabled;
     private final int toolBudget;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ThreadPoolExecutor executor;
+    private final AiTurnTelemetry telemetry;
+    private final Map<String, ActiveTurn> activeTurns = new ConcurrentHashMap<>();
 
     public OrchestratorService(JdbcTemplate jdbc, ObjectMapper mapper, ModelGateway modelGateway,
                                HybridRagService rag, ToolExecutor tools, ToolApprovalService approvals,
                                PlannerGateway plannerGateway, PlanValidator planValidator,
-                               ContextPacker contextPacker,
+                               ContextPacker contextPacker, AiTurnTelemetry telemetry,
                                @Value("${geek.llm.replan-enabled:true}") boolean replanEnabled,
-                               @Value("${geek.llm.planner-max-tool-steps:5}") int toolBudget) {
+                               @Value("${geek.llm.planner-max-tool-steps:5}") int toolBudget,
+                               @Value("${geek.llm.stream-workers:8}") int streamWorkers,
+                               @Value("${geek.llm.stream-queue:16}") int streamQueue) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.modelGateway = modelGateway;
@@ -50,6 +59,11 @@ public class OrchestratorService {
         this.contextPacker = contextPacker;
         this.replanEnabled = replanEnabled;
         this.toolBudget = Math.max(1, Math.min(8, toolBudget));
+        this.telemetry = telemetry;
+        int workers = Math.max(1, Math.min(32, streamWorkers));
+        this.executor = new ThreadPoolExecutor(workers, workers, 30, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(Math.max(1, Math.min(128, streamQueue))),
+                Thread.ofPlatform().name("ai-stream-", 0).factory(), new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Transactional
@@ -85,34 +99,82 @@ public class OrchestratorService {
 
     public SseEmitter streamMessage(String conversationNo, String message, String sceneHint,
                                     AuthPrincipal user, String authorization) {
+        if (message.length() > 2000) throw new BusinessException("AI40014", "消息超过长度限制");
         Map<String, Object> conv = loadConversation(conversationNo);
         if (((Number) conv.get("user_id")).longValue() != user.userId()) {
             throw new BusinessException("AI40302", "无权访问该会话");
         }
         SseEmitter emitter = new SseEmitter(120_000L);
-        executor.execute(() -> {
-            try {
-                TurnResult turn = processTurn(conv, message, sceneHint, user, authorization, events -> {
-                    for (Map<String, Object> e : events) {
-                        try {
-                            send(emitter, String.valueOf(e.get("event")), e.get("data"));
-                        } catch (IOException io) {
-                            throw new IllegalStateException(io);
-                        }
-                    }
-                });
-                send(emitter, "message.complete", turn.completePayload());
-                emitter.complete();
-            } catch (Exception ex) {
+        String turnId = UUID.randomUUID().toString();
+        var active = new ActiveTurn(conversationNo, user.userId(), new TurnCancellation(), emitter);
+        activeTurns.put(turnId, active);
+        Runnable cleanup = () -> {
+            if (activeTurns.remove(turnId, active)) active.cancellation().cancel();
+            executor.purge();
+        };
+        emitter.onTimeout(cleanup);
+        emitter.onCompletion(cleanup);
+        emitter.onError(error -> cleanup.run());
+        try {
+            send(emitter, "turn.accepted", Map.of("turnId", turnId));
+            active.cancellation().attach(executor.submit(() -> {
                 try {
-                    send(emitter, "error", Map.of("message", ex.getMessage() == null ? "AI 处理失败" : ex.getMessage()));
-                } catch (Exception ignored) {
+                    TurnResult turn = telemetry.stage("turn", () -> processTurn(conv, message, sceneHint, user, authorization, events -> {
+                        active.cancellation().check();
+                        for (Map<String, Object> e : events) {
+                            try {
+                                send(emitter, String.valueOf(e.get("event")), e.get("data"));
+                            } catch (IOException io) {
+                                throw new CancellationException();
+                            }
+                        }
+                    }, active.cancellation()));
+                    send(emitter, "message.complete", turn.completePayload());
+                    emitter.complete();
+                } catch (CancellationException e) {
+                    telemetry.count("cancelled");
+                    emitter.complete();
+                } catch (Exception ex) {
+                    try {
+                        send(emitter, "error", Map.of("message", "AI 处理失败，请稍后重试"));
+                    } catch (Exception ignored) {
+                    }
+                    emitter.complete();
+                } finally {
+                    activeTurns.remove(turnId, active);
                 }
-                emitter.completeWithError(ex);
-            }
-        });
+            }));
+        } catch (RejectedExecutionException e) {
+            activeTurns.remove(turnId, active);
+            telemetry.count("rejected");
+            throw new BusinessException("AI50314", "AI 请求繁忙，请稍后重试");
+        } catch (IOException e) {
+            cleanup.run();
+            throw new BusinessException("AI50314", "无法开启 AI 响应流");
+        }
         return emitter;
     }
+
+    void cancelTurn(String conversationNo, String turnId, long userId) {
+        var active = activeTurns.get(turnId);
+        if (active == null) return;
+        if (active.userId() != userId || !active.conversationNo().equals(conversationNo)) {
+            throw new BusinessException("AI40302", "无权取消该请求");
+        }
+        if (!activeTurns.remove(turnId, active)) return;
+        active.cancellation().cancel();
+        active.emitter().complete();
+        executor.purge();
+        telemetry.count("cancel.requested");
+    }
+
+    @PreDestroy
+    void stopStreams() {
+        activeTurns.values().forEach(turn -> turn.cancellation().cancel());
+        executor.shutdownNow();
+    }
+
+    private record ActiveTurn(String conversationNo, long userId, TurnCancellation cancellation, SseEmitter emitter) {}
 
     @Transactional
     public Map<String, Object> postMessage(String conversationNo, String message, String sceneHint,
@@ -122,7 +184,7 @@ public class OrchestratorService {
             throw new BusinessException("AI40302", "无权访问该会话");
         }
         List<Map<String, Object>> events = new ArrayList<>();
-        TurnResult turn = processTurn(conv, message, sceneHint, user, authorization, events::addAll);
+        TurnResult turn = telemetry.stage("turn", () -> processTurn(conv, message, sceneHint, user, authorization, events::addAll));
         Map<String, Object> data = turn.completePayload();
         data.put("events", events);
         return data;
@@ -143,6 +205,11 @@ public class OrchestratorService {
     @Transactional
     public TurnResult processTurn(Map<String, Object> conv, String message, String sceneHint,
                                   AuthPrincipal user, String authorization, EventSink sink) {
+        return processTurn(conv, message, sceneHint, user, authorization, sink, null);
+    }
+
+    private TurnResult processTurn(Map<String, Object> conv, String message, String sceneHint, AuthPrincipal user,
+                                   String authorization, EventSink sink, TurnCancellation cancellation) {
         long convId = ((Number) conv.get("id")).longValue();
         Instant now = Instant.now();
         Map<String, Object> contextRoot = parseContextMap(conv.get("context_json"));
@@ -161,7 +228,7 @@ public class OrchestratorService {
         Map<String, Object> plannerMeta = new LinkedHashMap<>();
         Map<String, Object> turnSlots = new LinkedHashMap<>(memorySlots);
 
-        var llmPlan = plannerGateway.plan(message, sceneHint, convId, packed);
+        var llmPlan = telemetry.stage("planner", () -> plannerGateway.plan(message, sceneHint, convId, packed));
         if (llmPlan.isPresent()) {
             PlanEnvelope validated = planValidator.validate(llmPlan.get(), message, memorySlots);
             agent = validated.agent();
@@ -198,7 +265,6 @@ public class OrchestratorService {
         List<Map<String, Object>> toolResults = new ArrayList<>();
         List<Map<String, Object>> citations = new ArrayList<>();
         List<Map<String, Object>> confirmations = new ArrayList<>();
-        boolean degraded = false;
         Map<String, Object> replanMeta = null;
 
         sink.emit(List.of(event("message.start", Map.of(
@@ -208,7 +274,7 @@ public class OrchestratorService {
         ))));
 
         executePlannedTools(planned, toolResults, citations, confirmations, sink,
-                convId, userMsgId, now, user, authorization, turnSlots, message);
+                convId, userMsgId, now, user, authorization, turnSlots, message, agent);
 
         if (replanEnabled) {
             var replanOpt = EmptySearchReplanner.maybeReplan(planned, toolResults, turnSlots, message);
@@ -217,7 +283,7 @@ public class OrchestratorService {
                 replanMeta = new LinkedHashMap<>(replan.meta());
                 sink.emit(List.of(event("plan.replan", replanMeta)));
                 executePlannedTools(replan.tools(), toolResults, citations, confirmations, sink,
-                        convId, userMsgId, now, user, authorization, turnSlots, message);
+                        convId, userMsgId, now, user, authorization, turnSlots, message, agent);
             }
         }
 
@@ -231,7 +297,8 @@ public class OrchestratorService {
                 || containsAny(message, "参数", "保修", "规格", "说明书"));
         boolean noEvidence = false;
         if (wantRag) {
-            List<HybridRagService.Citation> retrieved = rag.retrieve(message, 3);
+            String scope = "AFTERSALE".equals(agent) ? "RULE" : "PRODUCT";
+            List<HybridRagService.Citation> retrieved = telemetry.stage("rag", () -> rag.retrieve(message, 3, scope));
             if (retrieved.isEmpty()) {
                 noEvidence = true;
                 sink.emit(List.of(event("citation", Map.of("status", "NO_EVIDENCE", "message", "未检索到足够证据"))));
@@ -255,18 +322,19 @@ public class OrchestratorService {
                 语气可润色，事实必须 grounded。
                 """;
         String answerUser = "用户原话：" + message + "\n\n工具结果摘要草稿：\n" + draft;
-        ModelGateway.CompletionResult completion = modelGateway.completeAnswer(answerSystem, answerUser, convId);
-        degraded = completion.degraded();
-        AnswerGrounding.Result grounded = AnswerGrounding.ground(degraded ? null : completion.text(), draft, toolResults);
+        ModelGateway.CompletionResult completion = telemetry.stage("answer", () -> {
+            if (cancellation == null) return modelGateway.completeAnswer(answerSystem, answerUser, convId);
+            return modelGateway.streamAnswer(answerSystem, answerUser, convId,
+                    delta -> sink.emit(List.of(event("message.delta", Map.of("delta", delta)))), cancellation);
+        });
+        boolean degraded = completion.degraded();
+        AnswerGrounding.Result grounded = AnswerGrounding.ground(degraded || noEvidence ? null : completion.text(), draft, toolResults);
         String finalText = grounded.text();
         if (grounded.usedDraft() && degraded) {
             finalText = finalText + (finalText.contains("模型已降级") ? "" : "\n\n（模型已降级）");
         }
 
-        // stream deltas
-        for (String part : chunk(finalText, 40)) {
-            sink.emit(List.of(event("message.delta", Map.of("delta", part))));
-        }
+        if (cancellation != null) cancellation.check();
 
         long assistantMsgId = DistributedId.next();
         jdbc.update("""
@@ -296,7 +364,7 @@ public class OrchestratorService {
                                      EventSink sink,
                                      long convId, long userMsgId, Instant now,
                                      AuthPrincipal user, String authorization,
-                                     Map<String, Object> turnSlots, String message) {
+                                     Map<String, Object> turnSlots, String message, String agent) {
         for (PlanEnvelope.PlannedTool plan : planned) {
             if (toolResults.size() + confirmations.size() >= toolBudget) break;
             RiskLevel risk = ToolPolicy.riskOf(plan.name());
@@ -345,7 +413,9 @@ public class OrchestratorService {
                     continue;
                 }
 
-                Map<String, Object> result = tools.execute(plan.name(), resolvedArgs, user.userId(), authorization);
+                String knowledgeScope = "AFTERSALE".equals(agent) ? "RULE" : "PRODUCT";
+                Map<String, Object> result = telemetry.stage("tool", () -> tools.execute(
+                        plan.name(), resolvedArgs, user.userId(), authorization, knowledgeScope));
                 String summary = truncate(json(result), 1800);
                 jdbc.update("UPDATE ai_tool_call SET status='SUCCESS', result_summary=? WHERE id=?", summary, toolId);
                 Map<String, Object> tr = new LinkedHashMap<>();
@@ -921,14 +991,6 @@ public class OrchestratorService {
 
     private Map<String, Object> event(String name, Object data) {
         return Map.of("event", name, "data", data);
-    }
-
-    private List<String> chunk(String text, int size) {
-        List<String> parts = new ArrayList<>();
-        for (int i = 0; i < text.length(); i += size) {
-            parts.add(text.substring(i, Math.min(text.length(), i + size)));
-        }
-        return parts;
     }
 
     private String json(Object v) {

@@ -20,6 +20,20 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: geek_ai
+          MYSQL_USER: ci_ai
+          MYSQL_PASSWORD: ci-ai-fixture
+          MYSQL_ROOT_PASSWORD: ci-root-fixture
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -29,7 +43,35 @@ jobs:
           cache: maven
       - name: Verify backend unit/integration and migrations
         working-directory: backend
-        run: mvn -B -ntp -T 1C verify
+        run: mvn -B -ntp -T 1C -Pintegration verify
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify Agent policy against the running application
+        env:
+          AI_MYSQL_URL: jdbc:mysql://127.0.0.1:3306/geek_ai?allowPublicKeyRetrieval=true&useSSL=false
+          MYSQL_USER: ci_ai
+          MYSQL_PASSWORD: ci-ai-fixture
+          LLM_ENABLED: 'false'
+          AI_REDTEAM_URL: http://127.0.0.1:9011
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: |
+          export JWT_SECRET="$(openssl rand -hex 32)"
+          export AI_REDTEAM_TOKEN="$(node e2e/ai-redteam/fixture-token.cjs)"
+          echo "::add-mask::$AI_REDTEAM_TOKEN"
+          java -jar backend/geek-ai/target/geek-ai-0.1.0-SNAPSHOT.jar \
+            --spring.cloud.nacos.discovery.enabled=false --spring.cloud.discovery.enabled=false \
+            > "$RUNNER_TEMP/geek-ai-redteam.log" 2>&1 &
+          ai_pid=$!
+          trap 'kill "$ai_pid" 2>/dev/null || true' EXIT
+          if ! curl --fail --silent --show-error --retry 40 --retry-all-errors --retry-delay 1 "$AI_REDTEAM_URL/actuator/health"; then
+            tail -n 80 "$RUNNER_TEMP/geek-ai-redteam.log"
+            exit 1
+          fi
+          npx --yes promptfoo@0.125.1 eval --config e2e/ai-redteam/promptfooconfig.yaml --no-cache \
+            --output "$RUNNER_TEMP/geek-ai-redteam.json"
+          node -e 'const s=require(process.argv[1]).results.stats; if (!s.successes || s.failures || s.errors) process.exit(1)' \
+            "$RUNNER_TEMP/geek-ai-redteam.json"
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -81,7 +123,6 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          scanners: vuln
           severity: CRITICAL,HIGH
-          exit-code: '0'
-          ignore-unfixed: true
-        continue-on-error: true
+          exit-code: '1'

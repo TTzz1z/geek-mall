@@ -9,6 +9,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -21,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.function.Consumer;
 
 @Component
 public class ModelGateway {
@@ -68,6 +72,69 @@ public class ModelGateway {
     /** Phase C answer synthesis (temperature ~0.3). */
     public CompletionResult completeAnswer(String systemPrompt, String userPrompt, Long conversationId) {
         return complete("ANSWER", systemPrompt, userPrompt, conversationId, 0.3);
+    }
+
+    CompletionResult streamAnswer(String systemPrompt, String userPrompt, Long conversationId,
+                                  Consumer<String> onToken, TurnCancellation cancellation) {
+        if (!remoteConfigured() || failPrimary) return completeAnswer(systemPrompt, userPrompt, conversationId);
+        long started = System.currentTimeMillis();
+        String requestId = UUID.randomUUID().toString();
+        try {
+            var messages = List.of(Map.of("role", "system", "content", systemPrompt),
+                    Map.of("role", "user", "content", userPrompt));
+            var body = Map.of("model", llmModel, "messages", messages, "temperature", 0.3,
+                    "stream", true, "stream_options", Map.of("include_usage", true));
+            var request = HttpRequest.newBuilder(chatEndpoint())
+                    .timeout(Duration.ofMillis(llmTimeoutMs)).header("Authorization", "Bearer " + llmApiKey)
+                    .header("Content-Type", "application/json").header("Accept", "text/event-stream")
+                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build();
+            var response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            var responseBody = response.body();
+            try (var input = responseBody; var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+                cancellation.attach(input);
+                if (response.statusCode() != 200) throw new IllegalStateException("upstream rejected stream");
+                var answer = new StringBuilder();
+                JsonNode providerUsage = null;
+                boolean finished = false;
+                for (String line; (line = reader.readLine()) != null;) {
+                    cancellation.check();
+                    if (!line.startsWith("data:")) continue;
+                    String data = line.substring(5).strip();
+                    if ("[DONE]".equals(data)) {
+                        finished = true;
+                        break;
+                    }
+                    JsonNode event = mapper.readTree(data);
+                    if (event.hasNonNull("usage")) providerUsage = event.path("usage");
+                    String delta = event.path("choices").path(0).path("delta").path("content").asText("");
+                    if (!delta.isEmpty()) {
+                        if (answer.length() + delta.length() > 32_000) throw new IllegalStateException("upstream answer too long");
+                        answer.append(delta);
+                        onToken.accept(delta);
+                    }
+                }
+                cancellation.check();
+                if (!finished || answer.isEmpty()) throw new IllegalStateException("incomplete upstream stream");
+                String text = answer.toString();
+                var remote = providerUsage == null ? null : new RemoteCompletion(text, providerUsage.path("prompt_tokens").asInt(),
+                        providerUsage.path("completion_tokens").asInt(), providerUsage.has("prompt_tokens") && providerUsage.has("completion_tokens"));
+                var usage = tokenUsage(systemPrompt, userPrompt, text, remote);
+                log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - started), usage.promptTokens(),
+                        usage.completionTokens(), usage.estimated(), "SUCCESS", "scene=ANSWER;stream");
+                return new CompletionResult(primary, text, usage.promptTokens(), usage.completionTokens(), usage.estimated(), false);
+            } finally {
+                cancellation.detach(responseBody);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException();
+        } catch (Exception e) {
+            cancellation.check();
+            if (e instanceof CancellationException cancelled) throw cancelled;
+            log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - started),
+                    estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED", "scene=ANSWER;stream");
+            return new CompletionResult(fallback, localComplete(), estimateTokens(systemPrompt + userPrompt), 0, true, true);
+        }
     }
 
     public CompletionResult complete(String scene, String systemPrompt, String userPrompt,
@@ -151,7 +218,7 @@ public class ModelGateway {
 
         byte[] payload = mapper.writeValueAsBytes(body);
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(llmBaseUrl + "/v1/chat/completions"))
+                .uri(chatEndpoint())
                 .timeout(Duration.ofMillis(Math.max(3000, timeoutMs)))
                 .header("Authorization", "Bearer " + llmApiKey)
                 .header("Content-Type", "application/json")
@@ -163,12 +230,12 @@ public class ModelGateway {
             if (jsonObject && response.statusCode() == 400) {
                 return openAiCompatibleChat(systemPrompt, userPrompt, temperature, timeoutMs, false);
             }
-            throw new IllegalStateException("LLM HTTP " + response.statusCode() + ": " + truncate(response.body()));
+            throw new IllegalStateException("LLM HTTP " + response.statusCode());
         }
         JsonNode root = mapper.readTree(response.body());
         JsonNode content = root.path("choices").path(0).path("message").path("content");
         if (content.isMissingNode() || content.asText().isBlank()) {
-            throw new IllegalStateException("LLM empty content: " + truncate(response.body()));
+            throw new IllegalStateException("LLM empty content");
         }
         JsonNode usage = root.path("usage");
         boolean hasUsage = usage.isObject() && usage.has("prompt_tokens") && usage.has("completion_tokens");
@@ -178,6 +245,10 @@ public class ModelGateway {
 
     private String localComplete() {
         return "模型暂时不可用，请稍后重试。";
+    }
+
+    private URI chatEndpoint() {
+        return URI.create(llmBaseUrl + (llmBaseUrl.endsWith("/v1") ? "" : "/v1") + "/chat/completions");
     }
 
     private void log(String requestId, Long conversationId, String model, int latency,
@@ -206,11 +277,6 @@ public class ModelGateway {
     private static String trimSlash(String url) {
         if (url == null || url.isBlank()) return "https://api.deepseek.com";
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
-    }
-
-    private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() <= 400 ? s : s.substring(0, 400);
     }
 
     private record RemoteCompletion(String text, int promptTokens, int completionTokens, boolean hasUsage) {}

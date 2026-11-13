@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { PhPaperPlaneRight as Send, PhSparkle as Sparkle, PhWarning as Warning } from '@phosphor-icons/vue'
 import { mallApi } from '../api'
@@ -150,10 +150,26 @@ function parseSseBlocks(buffer: string): { events: Array<{ event: string; data: 
   return { events, rest }
 }
 
+let activeStream: AbortController | undefined
+let activeTurnId = ''
+
+function cancelStream() {
+  if (!activeStream) return
+  if (activeTurnId) {
+    void mallApi.request(`/api/v1/ai/conversations/${conversationNo.value}/turns/${activeTurnId}`,
+      { method: 'DELETE' }).catch(() => {})
+  }
+  activeStream.abort()
+}
+
+onUnmounted(cancelStream)
+
 async function send() {
   const text = input.value.trim()
   if (!text || loading.value) return
   loading.value = true
+  const stream = new AbortController()
+  activeStream = stream
   items.value.push({ role: 'user', content: text })
   input.value = ''
   streamLog.value = []
@@ -171,12 +187,15 @@ async function send() {
   try {
     await ensureConversation()
     const token = localStorage.getItem('geek.accessToken')
-    const qs = new URLSearchParams({ message: text })
     const response = await fetch(
-      `${apiBase}/api/v1/ai/conversations/${conversationNo.value}/stream?${qs}`,
+      `${apiBase}/api/v1/ai/conversations/${conversationNo.value}/stream`,
       {
+        method: 'POST',
+        signal: stream.signal,
+        body: JSON.stringify({ message: text }),
         headers: {
           Accept: 'text/event-stream',
+          'Content-Type': 'application/json',
           'X-Request-Id': crypto.randomUUID(),
           'X-Client-Type': 'WEB',
           ...(token ? { Authorization: `Bearer ${token}` } : {})
@@ -199,7 +218,9 @@ async function send() {
       for (const e of parsed.events) {
         streamLog.value.push(e.event)
         const data = (e.data && typeof e.data === 'object' ? e.data : {}) as Record<string, unknown>
-        if (e.event === 'message.start') {
+        if (e.event === 'turn.accepted') {
+          activeTurnId = String(data.turnId ?? '')
+        } else if (e.event === 'message.start') {
           assistant.agent = String(data.agent ?? '')
         } else if (e.event === 'message.delta') {
           assistant.content += String(data.delta ?? '')
@@ -231,6 +252,10 @@ async function send() {
     if (!assistant.content) assistant.content = '（无内容）'
     refreshProducts(assistant)
   } catch (e) {
+    if (stream.signal.aborted) {
+      if (!assistant.content) assistant.content = '已取消生成'
+      return
+    }
     // Keep already-streamed answer/products if a late disconnect fires after message.complete.
     const msg = e instanceof Error ? e.message : 'AI 请求失败，请先登录后再试'
     if (!assistant.content || assistant.content === '（无内容）') {
@@ -241,6 +266,8 @@ async function send() {
       assistant.content = `${assistant.content}\n\n（${msg}）`
     }
   } finally {
+    activeStream = undefined
+    activeTurnId = ''
     loading.value = false
     await nextTick()
     listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: 'smooth' })
@@ -361,7 +388,8 @@ onMounted(async () => {
 
     <form class="composer" @submit.prevent="send">
       <textarea v-model="input" rows="2" placeholder="例如：8000 元内轻薄办公本 / NovaBuds 和 Buds Lite 怎么选" />
-      <button type="submit" :disabled="loading"><Send :size="18" /> {{ loading ? '思考中…' : '发送' }}</button>
+      <button v-if="loading" type="button" @click="cancelStream">停止生成</button>
+      <button v-else type="submit"><Send :size="18" /> 发送</button>
     </form>
   </section>
 </template>
