@@ -339,14 +339,24 @@ public class HybridRagService {
 
     private String ensureIndex() {
         registerState();
-        return tx.execute(status -> {
+        boolean missing = false;
+        try {
+            es.head().uri("/{index}", index).retrieve().toBodilessEntity();
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() != 404) throw e;
+            missing = true;
+        }
+        boolean recreate = missing;
+        // Invalidate SQL success durably before any external creation. A lost PUT response or
+        // process exit must leave retryable chunks even when ES already committed the empty index.
+        String currentProfile = tx.execute(status -> {
             var state = lockState();
-            boolean reset = !embeddingModel().equals(state.get("model_profile"));
+            if (recreate || !embeddingModel().equals(state.get("model_profile"))
+                    || ((Number) state.get("generation")).longValue() == 0) resetGeneration();
+            return profile(((Number) lockState().get("generation")).longValue());
+        });
+        if (recreate) {
             try {
-                es.head().uri("/{index}", index).retrieve().toBodilessEntity();
-            } catch (RestClientResponseException e) {
-                if (e.getStatusCode().value() != 404) throw e;
-                reset = true;
                 es.put().uri("/{index}", index).body(Map.of("mappings", Map.of("properties", Map.of(
                     "title", Map.of("type", "text"),
                     "content", Map.of("type", "text"),
@@ -356,11 +366,13 @@ public class HybridRagService {
                     "embeddingModel", Map.of("type", "keyword"),
                     "embedding", Map.of("type", "dense_vector", "dims", EmbeddingClient.DIMENSIONS,
                             "index", true, "similarity", "cosine"))))).retrieve().toBodilessEntity();
+            } catch (RestClientResponseException e) {
+                // Another creator may have won after the HEAD probe. All other failures retry.
+                if (e.getStatusCode().value() != 400
+                        || !e.getResponseBodyAsString().contains("resource_already_exists_exception")) throw e;
             }
-            if (reset || ((Number) state.get("generation")).longValue() == 0) resetGeneration();
-            long generation = ((Number) lockState().get("generation")).longValue();
-            return profile(generation);
-        });
+        }
+        return currentProfile;
     }
 
     private long pendingCount(String profile) {

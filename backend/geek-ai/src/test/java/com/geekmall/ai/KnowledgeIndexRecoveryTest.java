@@ -24,6 +24,7 @@ class KnowledgeIndexRecoveryTest {
     HttpServer server;
     volatile boolean exists;
     volatile boolean failBulk;
+    volatile boolean loseCreateResponse;
     volatile int bulkCalls;
 
     @BeforeEach
@@ -51,7 +52,14 @@ class KnowledgeIndexRecoveryTest {
             int code = 200;
             String response = "{}";
             if (exchange.getRequestMethod().equals("HEAD")) code = exists ? 200 : 404;
-            else if (exchange.getRequestMethod().equals("PUT")) exists = true;
+            else if (exchange.getRequestMethod().equals("PUT")) {
+                exists = true;
+                if (loseCreateResponse) {
+                    loseCreateResponse = false;
+                    code = 500;
+                    response = "{\"error\":\"created but response lost before SQL commit\"}";
+                }
+            }
             else if (path.endsWith("/_bulk")) {
                 bulkCalls++;
                 response = failBulk ? "{\"errors\":true}" : "{\"errors\":false}";
@@ -102,6 +110,24 @@ class KnowledgeIndexRecoveryTest {
         assertTrue(exists);
         assertTrue(bulkCalls > first);
         assertEquals(2L, ((Number) rag.indexStatus().get("generation")).longValue());
+        assertTrue(rag.indexingComplete());
+    }
+
+    @Test
+    void createdIndexWithLostResponseCannotLeaveOldSqlSuccessMarkersAfterRollback() {
+        rag.indexPending();
+        assertTrue(rag.indexingComplete());
+        int previouslyIndexed = bulkCalls;
+        exists = false;
+        loseCreateResponse = true;
+        // ES commits the empty index; the old implementation then rolled its SQL transaction back.
+        rag.indexPending();
+        assertTrue(exists);
+        assertEquals(previouslyIndexed, bulkCalls);
+        assertFalse(rag.indexingComplete(), "An empty recreated index must not reuse the previous successful SQL generation");
+        assertEquals(2L, ((Number) rag.indexStatus().get("generation")).longValue());
+        rag.indexPending();
+        assertTrue(bulkCalls > previouslyIndexed);
         assertTrue(rag.indexingComplete());
     }
 
