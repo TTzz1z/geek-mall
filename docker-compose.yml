@@ -452,6 +452,7 @@ services:
       TRADE_SERVICE_URL: http://trade:9005
       SEARCH_SERVICE_URL: http://search-recommend:9004
       AFTERSALE_SERVICE_URL: http://aftersale:9008
+      MEMBER_SERVICE_URL: http://member:9006
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
       LLM_ENABLED: ${LLM_ENABLED:-true}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}

@@ -176,7 +176,6 @@ public class OrchestratorService {
 
     private record ActiveTurn(String conversationNo, long userId, TurnCancellation cancellation, SseEmitter emitter) {}
 
-    @Transactional
     public Map<String, Object> postMessage(String conversationNo, String message, String sceneHint,
                                            AuthPrincipal user, String authorization) {
         Map<String, Object> conv = loadConversation(conversationNo);
@@ -190,8 +189,8 @@ public class OrchestratorService {
         return data;
     }
 
-    public Map<String, Object> confirmTool(String confirmationToken, AuthPrincipal user) {
-        return approvals.confirm(confirmationToken, user.userId());
+    public Map<String, Object> confirmTool(String confirmationToken, AuthPrincipal user, String authorization) {
+        return approvals.confirm(confirmationToken, user.userId(), authorization);
     }
 
     public Map<String, Object> cancelTool(String confirmationToken, AuthPrincipal user) {
@@ -202,7 +201,6 @@ public class OrchestratorService {
         return approvals.status(confirmationToken, user.userId());
     }
 
-    @Transactional
     public TurnResult processTurn(Map<String, Object> conv, String message, String sceneHint,
                                   AuthPrincipal user, String authorization, EventSink sink) {
         return processTurn(conv, message, sceneHint, user, authorization, sink, null);
@@ -322,10 +320,15 @@ public class OrchestratorService {
                 语气可润色，事实必须 grounded。
                 """;
         String answerUser = "用户原话：" + message + "\n\n工具结果摘要草稿：\n" + draft;
+        boolean evidenceMissing = noEvidence;
+        var answerOutput = new AnswerStreamGuard(answerSystem, draft, toolResults, delta -> {
+            if (cancellation != null && !evidenceMissing) {
+                sink.emit(List.of(event("message.delta", Map.of("delta", delta))));
+            }
+        });
         ModelGateway.CompletionResult completion = telemetry.stage("answer", () -> {
-            if (cancellation == null) return modelGateway.completeAnswer(answerSystem, answerUser, convId);
-            return modelGateway.streamAnswer(answerSystem, answerUser, convId,
-                    delta -> sink.emit(List.of(event("message.delta", Map.of("delta", delta)))), cancellation);
+            if (cancellation == null) return modelGateway.completeAnswer(answerSystem, answerUser, convId, answerOutput);
+            return modelGateway.streamAnswer(answerSystem, answerUser, convId, answerOutput, cancellation);
         });
         boolean degraded = completion.degraded();
         AnswerGrounding.Result grounded = AnswerGrounding.ground(degraded || noEvidence ? null : completion.text(), draft, toolResults);
@@ -351,6 +354,11 @@ public class OrchestratorService {
                     ((Number) c.get("documentId")).longValue(),
                     ((Number) c.get("chunkId")).longValue(),
                     c.get("score"));
+        }
+
+        if (cancellation != null && (evidenceMissing || !finalText.equals(answerOutput.text()))) {
+            sink.emit(List.of(event("message.reset", Map.of("content", finalText, "degraded", degraded,
+                    "reason", grounded.usedDraft() ? "GROUNDED_FALLBACK" : "ANSWER_FINALIZED"))));
         }
 
         return new TurnResult(assistantMsgId, agent, finalText, completion, toolResults, citations, confirmations,
@@ -400,7 +408,6 @@ public class OrchestratorService {
                 if (risk.requiresConfirmation()) {
                     ToolPolicy.authorize(plan.name(), resolvedArgs, user.userId(), true);
                     String token = approvals.request(toolId, user.userId());
-                    jdbc.update("UPDATE ai_tool_call SET status='AWAITING_CONFIRMATION' WHERE id=?", toolId);
                     Map<String, Object> conf = Map.of(
                             "toolCallId", toolId,
                             "toolName", plan.name(),

@@ -110,7 +110,7 @@ class AiController {
     ApiResponse<Map<String, Object>> confirm(@PathVariable String confirmationToken,
                                              @AuthenticationPrincipal AuthPrincipal p,
                                              HttpServletRequest r) {
-        return ok(orchestrator.confirmTool(confirmationToken, p), r);
+        return ok(orchestrator.confirmTool(confirmationToken, p, r.getHeader("Authorization")), r);
     }
 
     @GetMapping("/ai/tool-calls/{confirmationToken}")

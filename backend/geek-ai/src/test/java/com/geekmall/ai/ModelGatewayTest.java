@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ModelGatewayTest {
     @Test
-    void forwardsTheFirstUpstreamTokenBeforeTheModelFinishes() throws Exception {
+    void forwardsTheFirstValidatedSentenceBeforeTheModelFinishes() throws Exception {
         var seen = new CountDownLatch(1);
         var finish = new CountDownLatch(1);
         var upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -27,7 +27,7 @@ class ModelGatewayTest {
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
             exchange.sendResponseHeaders(200, 0);
             try (var out = exchange.getResponseBody()) {
-                out.write("data: {\"choices\":[{\"delta\":{\"content\":\"First\"}}]}\n\n".getBytes(StandardCharsets.UTF_8));
+                out.write("data: {\"choices\":[{\"delta\":{\"content\":\"First.\"}}]}\n\n".getBytes(StandardCharsets.UTF_8));
                 out.flush();
                 try { finish.await(5, TimeUnit.SECONDS); }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -40,17 +40,18 @@ class ModelGatewayTest {
                     "primary", "fallback", false, true, "http://127.0.0.1:" + upstream.getAddress().getPort(),
                     "test-key", "test-model", 5000);
             var cancellation = new TurnCancellation();
-            var result = executor.submit(() -> model.streamAnswer("system", "user", 1L, delta -> {
-                assertEquals("First", delta);
+            var guard = new AnswerStreamGuard("system", "safe draft", java.util.List.of(), delta -> {
+                assertEquals("First.", delta);
                 seen.countDown();
-            }, cancellation));
+            });
+            var result = executor.submit(() -> model.streamAnswer("system", "user", 1L, guard, cancellation));
             try {
                 assertTrue(seen.await(3, TimeUnit.SECONDS));
                 assertFalse(result.isDone());
             } finally {
                 finish.countDown();
             }
-            assertEquals("First", result.get(3, TimeUnit.SECONDS).text());
+            assertEquals("First.", result.get(3, TimeUnit.SECONDS).text());
         } finally {
             upstream.stop(0);
         }

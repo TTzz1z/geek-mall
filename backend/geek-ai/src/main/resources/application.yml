@@ -19,6 +19,7 @@ geek:
   trade-service-url: ${TRADE_SERVICE_URL:http://localhost:9005}
   search-service-url: ${SEARCH_SERVICE_URL:http://localhost:9004}
   aftersale-service-url: ${AFTERSALE_SERVICE_URL:http://localhost:9008}
+  member-service-url: ${MEMBER_SERVICE_URL:http://localhost:9006}
   elasticsearch-url: ${ELASTICSEARCH_URL:http://localhost:9200}
   knowledge:
     tika-url: ${TIKA_URL:http://localhost:9998}

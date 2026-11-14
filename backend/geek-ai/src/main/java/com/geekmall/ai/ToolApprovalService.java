@@ -31,15 +31,39 @@ class ToolApprovalService {
     }
 
     String request(long toolId, long userId) {
-        String token = UUID.randomUUID().toString();
-        jdbc.update("""
-                INSERT INTO ai_confirmation(id,tool_call_id,confirmation_token,user_id,expires_at,status,created_at,execution_enabled)
-                VALUES(?,?,?,?,TIMESTAMPADD(SECOND,600,CURRENT_TIMESTAMP),'PENDING',CURRENT_TIMESTAMP,TRUE)
-                """, DistributedId.next(), toolId, token, userId);
-        return token;
+        return tx.execute(s -> {
+            var rows = jdbc.queryForList("""
+                    SELECT t.tool_name,t.arguments_json,t.status,v.user_id
+                    FROM ai_tool_call t JOIN ai_conversation v ON v.id=t.conversation_id
+                    WHERE t.id=? FOR UPDATE
+                    """, toolId);
+            if (rows.isEmpty() || ((Number) rows.getFirst().get("user_id")).longValue() != userId) {
+                throw new BusinessException("AI40303", "工具不属于当前用户会话");
+            }
+            var tool = rows.getFirst();
+            if (!"PENDING".equals(tool.get("status"))) throw new BusinessException("AI40902", "工具已进入审批流程");
+            ToolPolicy.authorize(String.valueOf(tool.get("tool_name")), arguments(tool), userId, true);
+            String token = UUID.randomUUID().toString();
+            jdbc.update("""
+                    INSERT INTO ai_confirmation(id,tool_call_id,confirmation_token,user_id,expires_at,status,created_at,execution_enabled)
+                    VALUES(?,?,?,?,TIMESTAMPADD(SECOND,600,CURRENT_TIMESTAMP),'PENDING',CURRENT_TIMESTAMP,TRUE)
+                    """, DistributedId.next(), toolId, token, userId);
+            jdbc.update("UPDATE ai_tool_call SET status='AWAITING_CONFIRMATION' WHERE id=?", toolId);
+            return token;
+        });
     }
 
-    Map<String, Object> confirm(String token, long userId) {
+    Map<String, Object> confirm(String token, long userId, String authorization) {
+        var row = tx.execute(s -> {
+            var owned = lockedApproval(token, userId);
+            expirePending(owned);
+            return owned;
+        });
+        // User-scoped remote reads run outside the local approval transaction. A service
+        // failure leaves PENDING intact so the owner can retry without storing a JWT.
+        if ("PENDING".equals(row.get("status"))) {
+            tools.validateDraftResources(String.valueOf(row.get("tool_name")), arguments(row), userId, authorization);
+        }
         return transition(token, userId, true);
     }
 
@@ -48,34 +72,49 @@ class ToolApprovalService {
     }
 
     Map<String, Object> status(String token, long userId) {
-        var rows = jdbc.queryForList("""
-                SELECT status,draft_no FROM ai_confirmation WHERE confirmation_token=? AND user_id=?
-                """, token, userId);
-        if (rows.isEmpty()) throw new BusinessException("AI40402", "确认令牌不存在");
-        var row = rows.getFirst();
-        return response(token, String.valueOf(row.get("status")), (String) row.get("draft_no"));
+        return tx.execute(s -> {
+            var row = lockedApproval(token, userId);
+            expirePending(row);
+            return response(token, String.valueOf(row.get("status")), (String) row.get("draft_no"));
+        });
     }
 
     private Map<String, Object> transition(String token, long userId, boolean approve) {
         return tx.execute(s -> {
-            var rows = jdbc.queryForList("""
-                    SELECT id,tool_call_id,user_id,status,draft_no,execution_enabled,
-                      expires_at<=CURRENT_TIMESTAMP AS expired
-                    FROM ai_confirmation WHERE confirmation_token=? FOR UPDATE
-                    """, token);
-            if (rows.isEmpty()) throw new BusinessException("AI40402", "确认令牌不存在");
-            var row = rows.getFirst();
-            if (((Number) row.get("user_id")).longValue() != userId) {
-                throw new BusinessException("AI40303", "确认令牌不属于当前用户");
-            }
+            var row = lockedApproval(token, userId);
+            expirePending(row);
             String current = String.valueOf(row.get("status"));
             if ("PENDING".equals(current)) {
-                boolean expired = truthy(row.get("expired")) || !truthy(row.get("execution_enabled"));
-                current = expired ? "EXPIRED" : approve ? "CONFIRMED" : "CANCELLED";
+                current = approve ? "CONFIRMED" : "CANCELLED";
                 setStatus(row, current, null);
             }
             return response(token, current, (String) row.get("draft_no"));
         });
+    }
+
+    private Map<String, Object> lockedApproval(String token, long userId) {
+        var rows = jdbc.queryForList("""
+                SELECT c.id,c.tool_call_id,c.user_id,c.status,c.draft_no,c.execution_enabled,
+                  c.expires_at<=CURRENT_TIMESTAMP AS expired,t.tool_name,t.arguments_json,v.user_id AS conversation_user_id
+                FROM ai_confirmation c JOIN ai_tool_call t ON t.id=c.tool_call_id
+                JOIN ai_conversation v ON v.id=t.conversation_id
+                WHERE c.confirmation_token=? FOR UPDATE
+                """, token);
+        if (rows.isEmpty()) throw new BusinessException("AI40402", "确认令牌不存在");
+        var row = rows.getFirst();
+        if (((Number) row.get("user_id")).longValue() != userId
+                || ((Number) row.get("conversation_user_id")).longValue() != userId) {
+            throw new BusinessException("AI40303", "确认令牌不属于当前用户会话");
+        }
+        return row;
+    }
+
+    private void expirePending(Map<String, Object> row) {
+        if ("PENDING".equals(row.get("status"))
+                && (truthy(row.get("expired")) || !truthy(row.get("execution_enabled")))) {
+            setStatus(row, "EXPIRED", null);
+            row.put("status", "EXPIRED");
+        }
     }
 
     @Scheduled(fixedDelayString = "${geek.tools.approval-interval:1000}")
@@ -97,8 +136,10 @@ class ToolApprovalService {
     private void advanceLocked(long id) {
         var approval = jdbc.queryForMap("""
                 SELECT c.id,c.tool_call_id,c.user_id,c.status,c.execution_enabled,
-                  c.expires_at<=CURRENT_TIMESTAMP AS expired,t.tool_name,t.arguments_json
+                  c.expires_at<=CURRENT_TIMESTAMP AS expired,t.tool_name,t.arguments_json,
+                  t.status AS tool_status,v.user_id AS conversation_user_id
                 FROM ai_confirmation c JOIN ai_tool_call t ON t.id=c.tool_call_id
+                JOIN ai_conversation v ON v.id=t.conversation_id
                 WHERE c.id=? FOR UPDATE
                 """, id);
         String status = String.valueOf(approval.get("status"));
@@ -106,13 +147,25 @@ class ToolApprovalService {
             setStatus(approval, "EXPIRED", null);
         } else if ("CONFIRMED".equals(status) && truthy(approval.get("execution_enabled"))) {
             try {
-                var args = mapper.readValue(String.valueOf(approval.get("arguments_json")), new TypeReference<Map<String, Object>>() {});
+                if (!"CONFIRMED".equals(approval.get("tool_status"))
+                        || ((Number) approval.get("user_id")).longValue() != ((Number) approval.get("conversation_user_id")).longValue()) {
+                    throw new BusinessException("AI40303", "工具与审批所属会话不一致");
+                }
+                var args = arguments(approval);
                 String draft = tools.executeApprovedDraft(String.valueOf(approval.get("tool_name")), args,
                         ((Number) approval.get("user_id")).longValue(), id);
                 setStatus(approval, "EXECUTED", draft);
-            } catch (BusinessException | com.fasterxml.jackson.core.JsonProcessingException e) {
+            } catch (BusinessException e) {
                 setStatus(approval, "DENIED", null);
             }
+        }
+    }
+
+    private Map<String, Object> arguments(Map<String, Object> row) {
+        try {
+            return mapper.readValue(String.valueOf(row.get("arguments_json")), new TypeReference<Map<String, Object>>() {});
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new BusinessException("AI40014", "审批参数无效");
         }
     }
 

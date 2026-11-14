@@ -224,6 +224,9 @@ async function send() {
           assistant.agent = String(data.agent ?? '')
         } else if (e.event === 'message.delta') {
           assistant.content += String(data.delta ?? '')
+        } else if (e.event === 'message.reset') {
+          assistant.content = String(data.content ?? '')
+          assistant.degraded = Boolean(data.degraded)
         } else if (e.event === 'tool.call' || e.event === 'tool.result') {
           assistant.tools = [...(assistant.tools ?? []), data]
           refreshProducts(assistant)
@@ -366,7 +369,7 @@ onMounted(async () => {
                   <dd>{{ value }}</dd>
                 </template>
               </dl>
-              <button v-if="!c.status || c.status === 'CONFIRMED'" type="button"
+              <button v-if="!c.status || c.status === 'PENDING' || c.status === 'CONFIRMED'" type="button"
                       :disabled="pendingApprovals.has(String(c.confirmationToken))" @click="confirm(c)">
                 {{ c.status === 'CONFIRMED' ? '查询执行结果' : (c.toolName === 'modify_address_draft' ? '确认生成改地址草稿' : '确认生成取消订单草稿') }}
               </button>

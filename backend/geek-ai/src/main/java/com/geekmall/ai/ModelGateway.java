@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
-import java.util.function.Consumer;
 
 @Component
 public class ModelGateway {
@@ -74,8 +73,21 @@ public class ModelGateway {
         return complete("ANSWER", systemPrompt, userPrompt, conversationId, 0.3);
     }
 
+    CompletionResult completeAnswer(String systemPrompt, String userPrompt, Long conversationId, AnswerStreamGuard output) {
+        var result = completeAnswer(systemPrompt, userPrompt, conversationId);
+        if (result.degraded()) return result;
+        try {
+            output.accept(result.text());
+            output.finish();
+            return result;
+        } catch (IllegalArgumentException unsafe) {
+            return new CompletionResult(result.modelName(), localComplete(), result.promptTokens(),
+                    result.completionTokens(), result.tokenUsageEstimated(), true);
+        }
+    }
+
     CompletionResult streamAnswer(String systemPrompt, String userPrompt, Long conversationId,
-                                  Consumer<String> onToken, TurnCancellation cancellation) {
+                                  AnswerStreamGuard output, TurnCancellation cancellation) {
         if (!remoteConfigured() || failPrimary) return completeAnswer(systemPrompt, userPrompt, conversationId);
         long started = System.currentTimeMillis();
         String requestId = UUID.randomUUID().toString();
@@ -96,7 +108,7 @@ public class ModelGateway {
                 var answer = new StringBuilder();
                 JsonNode providerUsage = null;
                 boolean finished = false;
-                for (String line; (line = reader.readLine()) != null;) {
+                for (String line; (line = readEventLine(reader)) != null;) {
                     cancellation.check();
                     if (!line.startsWith("data:")) continue;
                     String data = line.substring(5).strip();
@@ -110,11 +122,12 @@ public class ModelGateway {
                     if (!delta.isEmpty()) {
                         if (answer.length() + delta.length() > 32_000) throw new IllegalStateException("upstream answer too long");
                         answer.append(delta);
-                        onToken.accept(delta);
+                        output.accept(delta);
                     }
                 }
                 cancellation.check();
                 if (!finished || answer.isEmpty()) throw new IllegalStateException("incomplete upstream stream");
+                output.finish();
                 String text = answer.toString();
                 var remote = providerUsage == null ? null : new RemoteCompletion(text, providerUsage.path("prompt_tokens").asInt(),
                         providerUsage.path("completion_tokens").asInt(), providerUsage.has("prompt_tokens") && providerUsage.has("completion_tokens"));
@@ -135,6 +148,16 @@ public class ModelGateway {
                     estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED", "scene=ANSWER;stream");
             return new CompletionResult(fallback, localComplete(), estimateTokens(systemPrompt + userPrompt), 0, true, true);
         }
+    }
+
+    private static String readEventLine(BufferedReader reader) throws java.io.IOException {
+        var line = new StringBuilder();
+        for (int ch; (ch = reader.read()) != -1;) {
+            if (ch == '\n') return line.toString();
+            if (line.length() >= 65_536) throw new java.io.IOException("upstream event too long");
+            line.append((char) ch);
+        }
+        return line.isEmpty() ? null : line.toString();
     }
 
     public CompletionResult complete(String scene, String systemPrompt, String userPrompt,

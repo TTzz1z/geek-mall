@@ -61,8 +61,7 @@ public class PlannerGateway {
             return Optional.empty();
         }
         try {
-            String system = """
-                    你是极客商城受控导购编排器。只输出一个 JSON 对象，不要 Markdown，不要解释。
+            String publicSchema = """
                     JSON schema:
                     {
                       "agent": "GUIDE|PRODUCT_KNOWLEDGE|COMPARE|ORDER_LOGISTICS|AFTERSALE|CUSTOMER_SERVICE|OPS_ANALYTICS|PRODUCT_ENTRY",
@@ -77,6 +76,9 @@ public class PlannerGateway {
                       "tool_plan": [{"name":"tool","args":{},"reason":"string"}],
                       "stop": true
                     }
+                    """;
+            String instructions = """
+                    你是极客商城受控导购编排器。只输出一个 JSON 对象，不要 Markdown，不要解释。
                     规则：
                     1) 预算含「以内/不超过/以下」→ budget_mode=HARD_MAX，search_products.priceMax 必须等于预算，禁止抬高。
                     2) 「左右/大概/预算」→ AROUND，可用约 0.45~1.25 倍区间。
@@ -90,6 +92,7 @@ public class PlannerGateway {
                     8) 不要在 slots 里写入 last_search_spu_ids / last_sku_id（由系统维护）。
                     类目提示：笔记本=110，手机=220，耳机=510，手环=600，充电器=410，键盘=420，显示器=300。
                     """;
+            String system = instructions + publicSchema;
             String user = packed != null ? packed.userPrompt()
                     : "sceneHint=" + (sceneHint == null || sceneHint.isBlank() ? "auto" : sceneHint)
                     + "\nuserMessage=" + message + "\navailableTools=" + ToolPolicy.schemasForPrompt();
@@ -98,7 +101,12 @@ public class PlannerGateway {
             if (completion.degraded() || completion.text() == null || completion.text().isBlank()) {
                 return Optional.empty();
             }
-            PlanEnvelope parsed = parse(completion.text());
+            // Schema names, agent enums and tool identifiers are public planner vocabulary.
+            // Protect instruction prose without treating a valid tool name as a prompt leak.
+            String instructionProse = instructions.replaceAll("[A-Za-z_][A-Za-z0-9_.]*", " ");
+            var promptEcho = new PromptEchoGuard(instructionProse, "sceneHint=", "currentSlots=", "recentDialog:",
+                    "userMessage=", "availableTools=");
+            PlanEnvelope parsed = parse(completion.text(), promptEcho);
             planCache.put(message, sceneHint, slotView, parsed);
             return Optional.of(parsed);
         } catch (Exception ex) {
@@ -114,8 +122,14 @@ public class PlannerGateway {
     }
 
     PlanEnvelope parse(String rawText) throws Exception {
-        String json = extractJsonObject(rawText);
-        JsonNode root = mapper.readTree(json);
+        return parse(rawText, null);
+    }
+
+    private PlanEnvelope parse(String rawText, PromptEchoGuard promptEcho) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(rawText));
+        if (promptEcho != null && containsPromptEcho(root, promptEcho)) {
+            throw new IllegalArgumentException("internal planner prompt echo");
+        }
         String agent = root.path("agent").asText("GUIDE").toUpperCase();
         double confidence = root.path("confidence").asDouble(0.7);
         String goal = root.path("user_goal").asText(null);
@@ -147,6 +161,20 @@ public class PlannerGateway {
         }
         boolean stop = !root.has("stop") || root.path("stop").asBoolean(true);
         return new PlanEnvelope(agent, confidence, goal, slots, tools, stop, "LLM", null);
+    }
+
+    private static boolean containsPromptEcho(JsonNode node, PromptEchoGuard guard) {
+        if (node.isTextual()) return guard.containsEcho(node.asText());
+        if (node.isObject()) {
+            var fields = node.fieldNames();
+            while (fields.hasNext()) {
+                if (guard.containsEcho(fields.next())) return true;
+            }
+        }
+        for (JsonNode child : node) {
+            if (containsPromptEcho(child, guard)) return true;
+        }
+        return false;
     }
 
     private static String extractJsonObject(String text) {

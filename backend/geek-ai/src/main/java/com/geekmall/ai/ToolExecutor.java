@@ -23,13 +23,15 @@ public class ToolExecutor {
     private final RestClient tradeClient;
     private final RestClient searchClient;
     private final RestClient aftersaleClient;
+    private final RestClient memberClient;
     private final AiTurnTelemetry telemetry;
 
     public ToolExecutor(HybridRagService rag, ObjectMapper mapper, JdbcTemplate jdbc, AiTurnTelemetry telemetry,
                         @Value("${geek.product-service-url}") String productUrl,
                         @Value("${geek.trade-service-url}") String tradeUrl,
                         @Value("${geek.search-service-url}") String searchUrl,
-                        @Value("${geek.aftersale-service-url}") String aftersaleUrl) {
+                        @Value("${geek.aftersale-service-url}") String aftersaleUrl,
+                        @Value("${geek.member-service-url}") String memberUrl) {
         this.rag = rag;
         this.mapper = mapper;
         this.jdbc = jdbc;
@@ -38,6 +40,7 @@ public class ToolExecutor {
         this.tradeClient = InternalRestClient.create(tradeUrl);
         this.searchClient = InternalRestClient.create(searchUrl);
         this.aftersaleClient = InternalRestClient.create(aftersaleUrl);
+        this.memberClient = InternalRestClient.create(memberUrl);
     }
 
     public Map<String, Object> execute(String toolName, Map<String, Object> args, long userId, String userToken,
@@ -85,6 +88,21 @@ public class ToolExecutor {
 
     String executeApprovedDraft(String tool, Map<String, Object> args, long userId, long approvalId) {
         ToolPolicy.authorize(tool, args, userId, true);
+        var approvals = jdbc.queryForList("""
+                SELECT t.arguments_json FROM ai_confirmation c
+                JOIN ai_tool_call t ON t.id=c.tool_call_id
+                JOIN ai_conversation v ON v.id=t.conversation_id
+                WHERE c.id=? AND c.user_id=? AND v.user_id=c.user_id AND c.status='CONFIRMED'
+                  AND c.execution_enabled=TRUE AND t.status='CONFIRMED' AND t.tool_name=?
+                """, approvalId, userId, tool);
+        if (approvals.isEmpty()) throw new BusinessException("AI40305", "缺少有效的所属用户审批");
+        try {
+            if (!mapper.readTree(String.valueOf(approvals.getFirst().get("arguments_json"))).equals(mapper.valueToTree(args))) {
+                throw new BusinessException("AI40305", "执行参数与审批不一致");
+            }
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new BusinessException("AI40014", "审批参数无效");
+        }
         String draftType = switch (tool) {
             case "cancel_paid_order_draft" -> "CANCEL_PAID_ORDER";
             case "modify_address_draft" -> "MODIFY_ADDRESS";
@@ -97,6 +115,36 @@ public class ToolExecutor {
                 ON DUPLICATE KEY UPDATE draft_no=draft_no
                 """, DistributedId.next(), draftNo, userId, draftType, json(args));
         return draftNo;
+    }
+
+    void validateDraftResources(String tool, Map<String, Object> args, long userId, String authorization) {
+        ToolPolicy.authorize(tool, args, userId, true);
+        var order = getOrderDetail(authorization, String.valueOf(args.get("orderNo")));
+        if (!(order.get("data") instanceof Map<?, ?> detail)) {
+            throw new BusinessException("AI50301", "订单查询暂不可用，请稍后重试");
+        }
+        String status = String.valueOf(detail.get("status"));
+        Set<String> allowed = "cancel_paid_order_draft".equals(tool)
+                ? Set.of("PAID") : Set.of("PENDING_PAYMENT", "PAID");
+        if (!allowed.contains(status)) throw new BusinessException("AI40901", "当前订单状态无法生成该草稿");
+        if ("modify_address_draft".equals(tool)) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> address = memberClient.get().uri("/api/v1/user/addresses/{id}", args.get("addressId"))
+                        .headers(h -> applyAuth(h, authorization)).retrieve().body(Map.class);
+                if (address == null || !(address.get("data") instanceof Map<?, ?> data)
+                        || !(data.get("id") instanceof Number id) || id.longValue() != ((Number) args.get("addressId")).longValue()) {
+                    throw new BusinessException("AI40304", "收货地址不存在或无权访问");
+                }
+            } catch (RestClientResponseException e) {
+                if (Set.of(401, 403, 404).contains(e.getStatusCode().value())) {
+                    throw new BusinessException("AI40304", "收货地址不存在或无权访问");
+                }
+                throw new BusinessException("AI50301", "地址查询暂不可用，请稍后重试");
+            } catch (org.springframework.web.client.RestClientException e) {
+                throw new BusinessException("AI50301", "地址查询暂不可用，请稍后重试");
+            }
+        }
     }
 
     private Map<String, Object> searchProducts(Map<String, Object> a) {
