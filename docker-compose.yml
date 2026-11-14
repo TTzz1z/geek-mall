@@ -319,7 +319,6 @@ services:
       MYSQL_USER: ${MYSQL_USER:-geek}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-CHANGE_ME_MYSQL_PASSWORD}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-CHANGE_ME_INTERNAL_SERVICE_KEY}
-      REDIS_HOST: redis
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER:-geek}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-CHANGE_ME_RABBITMQ_PASSWORD}
@@ -329,7 +328,6 @@ services:
     depends_on:
       <<: *security_check_depends
       mysql: { condition: service_healthy }
-      redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       nacos: { condition: service_healthy }
     healthcheck:
