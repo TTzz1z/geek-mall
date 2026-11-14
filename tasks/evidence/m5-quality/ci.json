@@ -1,0 +1,60 @@
+{
+  "serviceRecovery": [
+    {
+      "case": "payment_recovery",
+      "passed": true
+    },
+    {
+      "case": "refund_recovery",
+      "passed": true
+    },
+    {
+      "case": "broker_recovery",
+      "passed": true
+    }
+  ],
+  "sourceRevision": "1d8a21da357939c91ba24b450056b14ce9550f92",
+  "jobs": [
+    "backend",
+    "frontend",
+    "compose-contract-security",
+    "runtime-security"
+  ],
+  "runtime": {
+    "baselineFindings": 43,
+    "high": 33,
+    "currentFindings": 43,
+    "critical": 10,
+    "newHighCritical": 0,
+    "guavaShadedInNacosRemains": true
+  },
+  "url": "https://github.com/TTzz1z/geek-mall/actions/runs/43595300786",
+  "runId": 43595300786,
+  "conclusion": "success",
+  "junit": {
+    "surefire": {
+      "skipped": 0,
+      "errors": 0,
+      "tests": 93,
+      "failures": 0
+    },
+    "failsafe": {
+      "skipped": 0,
+      "errors": 0,
+      "tests": 48,
+      "failures": 0
+    }
+  },
+  "sourceDependency": {
+    "newHighCritical": 0,
+    "existingFindingKeys": 661
+  },
+  "checkedMergeRevision": "f452ddfe253a546774264c808d569d6dd289ae65",
+  "promptfoo": {
+    "errors": 0,
+    "remoteLlm": false,
+    "successes": 4,
+    "failures": 0
+  },
+  "recordedAt": "2026-11-14T20:44:58+08:00"
+}

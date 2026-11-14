@@ -3,5 +3,6 @@
   "temporaryEmbeddingModelsRemoved": true,
   "unrelatedOutputUntouched": true,
   "stagedJarsRemoved": 10,
-  "logsRetained": true
+  "logsRetained": true,
+  "temporaryRedisContainerRemoved": true
 }

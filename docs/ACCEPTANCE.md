@@ -41,7 +41,7 @@ $env:E2E_BASE_URL='http://127.0.0.1:8088'
 | 2 Agent 治理 | Turn/加购步骤持久幂等，真实 MySQL+HTTP 的 AgentExecutionIT 11 项；真实远程模型四类合成攻击共 8 次调用、2,370 输出 Token，无越权执行 | 固定攻击样例；跨实例全局 ID/取消和完整模型安全评估仍属扩展 |
 | 3 知识库 | MySQL/ES 索引生命周期、MinIO/Tika 真 PDF 与伪装文件拒绝；62 条合成问题、BM25/Qwen3 Q8_0/BGE-M3 F16 真模型对比和冻结阈值报告 | 仅 3 个来源、6 分块，标注尚无独立人工专家复核；FPR 4/12 未通过暂定门槛，不能宣称泛化质量达标 |
 | 4 流式与观测 | 真实 HTTP 首字节/idle/total 超时、取消、饱和、明确终态；真实 Chrome 检查 EOF 未完成与稳定键重试；前端最新 20 测试和构建通过 | Gateway/Jaeger 的完整部署实验沿用历史证据，本轮未重新部署该链路 |
-| 5 质量门禁 | 完整后端 reactor、迁移/契约、实际七服务演练、真实模型独立验收、远程 CI 和运行镜像漏洞扫描；报告保存 tasks/evidence 与 GitHub artifacts | CI 首轮发现旧 MinIO 镜像不可拉取；已修复真实仓库引用。Guava 安全修复与最终索引身份保护正在复验，远程最终状态须看 PR 检查 |
+| 5 质量门禁 | 完整后端 93 Surefire + 48 Failsafe、前端 20 测试、实际七服务演练、真实模型独立验收；目标代码 1d8a21d 的 CI 四个 job 全绿，包含运行镜像差异阻断 | 修复了首轮 MinIO 镜像不可拉取；安全报告仍保留 43 条镜像基线漏洞，含无法由 POM 覆盖的 Nacos shaded Guava，不等于安全清零 |
 
 后端计数以 [backend-tests.json](../tasks/evidence/m5-quality/backend-tests.json) 的实际运行版本为准，新增增量会另记最终结果。真实服务断言见 [M2 记录](../tasks/evidence/m2-recovery/verification.md)，模型调用和前端证据见 [M3 记录](../tasks/evidence/m3-agent/verification.md)。检索实现与质量结果见 [检索评测说明](../backend/geek-ai/src/main/resources/eval/retrieval-v2.md)。
 

@@ -28,7 +28,7 @@
 
 ## 最终整合
 
-2026-11-14 最终完整 reactor `-Pintegration verify` 通过：91 Surefire + 46 Failsafe，零失败/错误/跳过，包括最后新增的两项 Agent IT、超时分类和取消终态修正。加购改为远程准备、事务内标记与写入、事务外生成持久响应；补测响应生成服务故障后重试仍只增加一次。第一次 clean 后整合发现旧审批单测仍期待重复 request 报错，按新契约改为相同 token 重放后重新执行全量通过。精确统计见相邻 m5-quality/backend-tests.json。
+2026-11-14 最终完整 reactor `-Pintegration verify` 通过：93 Surefire + 48 Failsafe，零失败/错误/跳过，包括最后新增的两项 Agent IT、超时分类和取消终态修正。加购改为远程准备、事务内标记与写入、事务外生成持久响应；补测响应生成服务故障后重试仍只增加一次。第一次 clean 后整合发现旧审批单测仍期待重复 request 报错，按新契约改为相同 token 重放后重新执行全量通过。精确统计见相邻 m5-quality/backend-tests.json，远程 Java 21 独立验收同样通过。
 
 ## 边界
 
