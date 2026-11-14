@@ -1,0 +1,19 @@
+[ {
+  "report" : "retrieval-LEXICAL.json",
+  "p95LatencyMs" : 22.5251,
+  "model" : "LEXICAL",
+  "ndcg" : 1.0,
+  "passesProvisionalThresholds" : false,
+  "mrr" : 1.0,
+  "noAnswerFalsePositiveRate" : 0.8333333333333334,
+  "recall" : 1.0
+}, {
+  "report" : "retrieval-bge-m3_latest.json",
+  "p95LatencyMs" : 61.0823,
+  "model" : "bge-m3:latest",
+  "ndcg" : 0.8888888888888888,
+  "passesProvisionalThresholds" : false,
+  "mrr" : 0.8888888888888888,
+  "noAnswerFalsePositiveRate" : 0.3333333333333333,
+  "recall" : 0.8888888888888888
+} ]

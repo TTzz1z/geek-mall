@@ -60,13 +60,13 @@ public class KnowledgeIngestService {
                 """, Integer.class, kbId, sourceType, sourceId);
         int version = previous.isEmpty() ? 1 : previous.getFirst() + 1;
         jdbc.update("""
-                UPDATE knowledge_document SET parse_status='DISABLED'
-                WHERE kb_id=? AND source_type=? AND source_id=? AND parse_status='READY'
+                UPDATE knowledge_document SET activation_status='SUPERSEDED',index_cleanup_pending=TRUE
+                WHERE kb_id=? AND source_type=? AND source_id=? AND activation_status='CANDIDATE'
                 """, kbId, sourceType, sourceId);
         Instant now = Instant.now();
         jdbc.update("""
-                INSERT INTO knowledge_document(id,kb_id,source_type,source_id,title,file_url,parse_status,version_no,created_at)
-                VALUES(?,?,?,?,?,?,'READY',?,?)
+                INSERT INTO knowledge_document(id,kb_id,source_type,source_id,title,file_url,parse_status,version_no,created_at,activation_status)
+                VALUES(?,?,?,?,?,?,'READY',?,?,'CANDIDATE')
                 """, docId, kbId, sourceType, sourceId, req.title(), req.fileUrl(), version, Timestamp.from(now));
 
         List<Map<String, Object>> chunks = new ArrayList<>();
@@ -92,6 +92,7 @@ public class KnowledgeIngestService {
         out.put("title", req.title());
         out.put("parseStatus", "READY");
         out.put("indexStatus", "PENDING");
+        out.put("activationStatus", "CANDIDATE");
         out.put("kbCode", req.kbCode() == null || req.kbCode().isBlank() ? "PRODUCT" : req.kbCode());
         out.put("ocrUsed", parsed.ocr());
         out.put("vlUsed", false);
@@ -111,10 +112,11 @@ public class KnowledgeIngestService {
         String sourceId = String.valueOf(product.get("id"));
         String act = action == null ? "UPSERT" : action.toUpperCase(Locale.ROOT);
         if ("DEACTIVATE".equals(act) || "OFF_SALE".equals(act)) {
+            long kb = resolveKb("PRODUCT");
             int n = jdbc.update("""
-                    UPDATE knowledge_document SET parse_status='DISABLED'
-                    WHERE source_type='PRODUCT_SPU' AND source_id=?
-                    """, sourceId);
+                    UPDATE knowledge_document SET parse_status='DISABLED',activation_status='INACTIVE',index_cleanup_pending=TRUE
+                    WHERE kb_id=? AND source_type='PRODUCT_SPU' AND source_id=?
+                    """, kb, sourceId);
             return Map.of("action", "DEACTIVATE", "sourceId", sourceId, "updated", n);
         }
         String title = String.valueOf(product.getOrDefault("title", "商品 " + sourceId));
@@ -125,7 +127,7 @@ public class KnowledgeIngestService {
     public int countActiveBySource(String sourceId) {
         Integer n = jdbc.queryForObject("""
                 SELECT COUNT(1) FROM knowledge_document
-                WHERE source_type='PRODUCT_SPU' AND source_id=? AND parse_status='READY'
+                WHERE source_type='PRODUCT_SPU' AND source_id=? AND parse_status='READY' AND activation_status='ACTIVE'
                 """, Integer.class, sourceId);
         return n == null ? 0 : n;
     }

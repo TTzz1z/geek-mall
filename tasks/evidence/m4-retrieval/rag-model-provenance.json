@@ -1,0 +1,82 @@
+{
+  "recordedAt": "2026-11-14T11:45:13.5499094Z",
+  "runtime": {
+    "version": "0.35.1"
+  },
+  "models": [
+    {
+      "name": "bge-m3:latest",
+      "model": "bge-m3:latest",
+      "modified_at": "2026-11-14T19:42:33.1657557+08:00",
+      "size": 1157671313,
+      "digest": "524a3f3637efd1b6cde3b28a695fdd91d590f44d894b96e236c4fed3a882b5f1",
+      "details": {
+        "parent_model": "bge-m3.gguf",
+        "format": "gguf",
+        "family": "bert",
+        "families": [
+          "bert"
+        ],
+        "parameter_size": "566.70M",
+        "quantization_level": "F16",
+        "context_length": 8192,
+        "embedding_length": 1024
+      },
+      "capabilities": [
+        "embedding"
+      ]
+    },
+    {
+      "name": "qwen3-embedding:0.6b",
+      "model": "qwen3-embedding:0.6b",
+      "modified_at": "2026-11-14T19:42:30.8451512+08:00",
+      "size": 639150708,
+      "digest": "aee316ee5e6bc0db447b998dd7e1d7a4e41cb799a604583ae016ad74830aadb2",
+      "details": {
+        "parent_model": "qwen3-0.6b.gguf",
+        "format": "gguf",
+        "family": "qwen3",
+        "families": [
+          "qwen3"
+        ],
+        "parameter_size": "595.78M",
+        "quantization_level": "Q8_0",
+        "context_length": 32768,
+        "embedding_length": 1024
+      },
+      "capabilities": [
+        "tools",
+        "thinking",
+        "embedding"
+      ]
+    }
+  ],
+  "sourceBlobs": [
+    {
+      "quantization": "Q8_0",
+      "bytes": 639150592,
+      "url": "https://registry.ollama.ai/v2/library/qwen3-embedding/blobs/sha256:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      "sha256": "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      "model": "qwen3-embedding:0.6b"
+    },
+    {
+      "quantization": "F16",
+      "bytes": 1157671200,
+      "url": "https://registry.ollama.ai/v2/library/bge-m3/blobs/sha256:daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c",
+      "sha256": "daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c",
+      "model": "bge-m3:latest"
+    }
+  ],
+  "processor": {
+    "Name": "AMD Ryzen 7 5800H with Radeon Graphics         ",
+    "NumberOfCores": 8,
+    "NumberOfLogicalProcessors": 16
+  },
+  "totalMemoryKB": 16625724,
+  "gpu": {
+    "Name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+    "DriverVersion": "32.0.16.1692"
+  },
+  "defaultSelectedMode": "BM25",
+  "notes": "Official GGUF files SHA256 verified after ranged HTTPS download; imported using official local Ollama blob/create APIs. Native registry pull rejected proxy synthetic-IP redirect. Temporary task model server11435 only; no permanent config/installation changes."
+}

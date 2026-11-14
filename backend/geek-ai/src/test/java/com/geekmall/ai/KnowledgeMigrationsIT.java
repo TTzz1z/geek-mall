@@ -34,7 +34,8 @@ class KnowledgeMigrationsIT {
                        (96204,96102,'PLATFORM_RULE','PAYMENT','支付与发票规则',NULL,'REPARSE_REQUIRED',1,NOW()),
                        (98101,96101,'UPLOAD',NULL,'Legacy file','/docs/legacy.pdf','READY',1,NOW()),
                        (98102,96101,'UPLOAD','current-pdf','Parsed PDF','/docs/current.pdf','READY',2,NOW()),
-                       (98103,96101,'UPLOAD','  ','Legacy text','  ','READY',1,NOW())
+                       (98103,96101,'UPLOAD','  ','Legacy text','  ','READY',1,NOW()),
+                       (98104,96101,'UPLOAD','current-pdf','Newer parsed PDF',NULL,'READY',3,NOW())
                 """);
         jdbc.update("""
                 INSERT INTO knowledge_chunk(id,document_id,chunk_no,content,metadata_json)
@@ -65,6 +66,14 @@ class KnowledgeMigrationsIT {
                 SELECT id FROM knowledge_chunk WHERE document_id=96201
                   AND metadata_json->>'$.mime'='text/plain' AND metadata_json->>'$.provenance'='curated' ORDER BY id
                 """, Long.class)).containsExactly(96301L, 96302L);
+        assertThat(jdbc.queryForObject("SELECT activation_status FROM knowledge_document WHERE id=98102", String.class))
+                .isEqualTo("SUPERSEDED");
+        assertThat(jdbc.queryForObject("SELECT activation_status FROM knowledge_document WHERE id=98104", String.class))
+                .isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForList("SELECT id FROM knowledge_document WHERE activation_status='ACTIVE' AND parse_status<>'READY'", Long.class))
+                .isEmpty();
+        assertThat(jdbc.queryForObject("SELECT activation_status FROM knowledge_document WHERE id=96202", String.class))
+                .isEqualTo("INACTIVE");
     }
 
     private record Document(long id, String sourceId, String fileUrl, String status, int version) {}

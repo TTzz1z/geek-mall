@@ -1,0 +1,140 @@
+[
+  {
+    "id": "R2-001",
+    "query": "极客本 Air 14 的屏幕是几英寸？",
+    "answerable": true,
+    "score": 0.8211329609160877
+  },
+  {
+    "id": "R2-021",
+    "query": "数码商品几天内可以无理由退货？",
+    "answerable": true,
+    "score": 0.7765265874696378
+  },
+  {
+    "id": "R2-036",
+    "query": "订单完成后能否申请发票？",
+    "answerable": true,
+    "score": 0.760610179082694
+  },
+  {
+    "id": "R2-061",
+    "query": "当前售后规则允许 AI 正式退款吗？",
+    "answerable": true,
+    "score": 0.7554955668509356
+  },
+  {
+    "id": "R2-030",
+    "query": "未发货时应该选择哪种退款类型？",
+    "answerable": true,
+    "score": 0.7308582000503839
+  },
+  {
+    "id": "R2-027",
+    "query": "什么订单可以申请仅退款？",
+    "answerable": true,
+    "score": 0.7244525587551808
+  },
+  {
+    "id": "R2-033",
+    "query": "正式支付要去哪里确认？",
+    "answerable": true,
+    "score": 0.6968516321616942
+  },
+  {
+    "id": "R2-016",
+    "query": "Air 14 固态硬盘多大？",
+    "answerable": true,
+    "score": 0.6745236945335064
+  },
+  {
+    "id": "R2-019",
+    "query": "极客本 Air 14 可以插 SD 卡吗？",
+    "answerable": true,
+    "score": 0.6642956642752051
+  },
+  {
+    "id": "R2-007",
+    "query": "Air 14 办公场景续航约多少小时？",
+    "answerable": true,
+    "score": 0.6636650497212515
+  },
+  {
+    "id": "R2-059",
+    "query": "当前说明书版本中 Air 14 的办公续航是多少？",
+    "answerable": true,
+    "score": 0.6613626641595661
+  },
+  {
+    "id": "R2-004",
+    "query": "Air 14 适合什么使用场景？",
+    "answerable": true,
+    "score": 0.6555698048394049
+  },
+  {
+    "id": "R2-024",
+    "query": "退货时配件需要齐全吗？",
+    "answerable": true,
+    "score": 0.6508300822878815
+  },
+  {
+    "id": "R2-013",
+    "query": "Air 14 使用什么 CPU？",
+    "answerable": true,
+    "score": 0.6388119219360637
+  },
+  {
+    "id": "R2-010",
+    "query": "Air 14 的续航与快充能力如何？",
+    "answerable": true,
+    "score": 0.6159372237049016
+  },
+  {
+    "id": "R2-045",
+    "query": "退货运费固定收取多少钱？",
+    "answerable": false,
+    "score": 0.607878445154123
+  },
+  {
+    "id": "R2-039",
+    "query": "极客本 Air 14 的出厂 BIOS 密码是什么？",
+    "answerable": false,
+    "score": 0.5811863300864107
+  },
+  {
+    "id": "R2-048",
+    "query": "电子发票使用什么增值税税率？",
+    "answerable": false,
+    "score": 0.5389892924181701
+  },
+  {
+    "id": "R2-058",
+    "query": "Air 14 办公续航是不是十二小时？",
+    "answerable": false,
+    "score": 0.4747149318740834
+  },
+  {
+    "id": "R2-042",
+    "query": "笔记本主板维修网点的电话号码是多少？",
+    "answerable": false,
+    "score": 0.4706299122730342
+  },
+  {
+    "id": "R2-051",
+    "query": "数码商品七天无理由退货需要配件齐全吗？",
+    "answerable": false,
+    "score": 0.4515275317502044
+  },
+  {
+    "id": "R2-054",
+    "query": "订单完成后如何申请发票？",
+    "answerable": false,
+    "score": 0.42561058367383203
+  },
+  {
+    "id": "R2-055",
+    "query": "极客本 Air 14 有多少 GB LPDDR5x 内存？",
+    "answerable": false,
+    "score": 0.3864522846075446
+  }
+]

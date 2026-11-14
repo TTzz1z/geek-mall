@@ -65,7 +65,7 @@ AI 服务用于把自然语言需求转换为受控的查询、对比、加购�
 
 知识文件从配置的 MinIO 文档桶读取，由 Tika 提取 PDF、DOCX、XLSX 正文和图片 OCR 文本。解析成功后保存文档来源、版本和知识范围，异步同步 Elasticsearch 索引。
 
-Elasticsearch 按 `PRODUCT` 或 `RULE` 过滤 BM25 与向量召回。配置 `EMBEDDING_URL` 后，Java 侧用 RRF 融合两路结果，再根据数据库中的范围和文档状态校验证据。未配置向量服务时使用 BM25。证据不足时返回空 citation。评测查询、模型对比及配置见 [工程说明](../ENGINEERING.md)。
+Elasticsearch 按 `PRODUCT` 或 `RULE` 过滤 BM25 与向量召回。配置 `EMBEDDING_URL` 后，Java 侧用 RRF 融合两路结果，所有候选还须通过语义相似度准入，再复核数据库范围、状态和激活版本。默认模型为 BGE-M3，阈值 0.62；embedding 故障返回空证据。未配置向量服务时保留 BM25 兼容模式；设 `KNOWLEDGE_REQUIRE_SEMANTIC_GATE=true` 可要求缺失后端也返回空证据。本次冻结 TEST 的无答案候选误召回率仍为 33.3%，尚未达到暂定 20% 门槛，不能将兼容模式或当前实验称为质量全面通过。实验结果见 [检索评测说明](../backend/geek-ai/src/main/resources/eval/retrieval-v2.md)。
 
 商品卡、价格和库存使用业务工具结果。自然文本流经 `AnswerStreamGuard` 校验再发送，校验失败时替换成已基于业务证据生成的草稿。
 

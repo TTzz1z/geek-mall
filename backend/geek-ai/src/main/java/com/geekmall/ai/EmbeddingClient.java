@@ -22,7 +22,7 @@ class EmbeddingClient {
     private final boolean enabled;
 
     EmbeddingClient(@Value("${geek.knowledge.embedding-url:}") String url,
-                    @Value("${geek.knowledge.embedding-model:Qwen/Qwen3-Embedding-0.6B}") String model,
+                    @Value("${geek.knowledge.embedding-model:BAAI/bge-m3}") String model,
                     @Value("${geek.knowledge.embedding-key:}") String apiKey) {
         this.enabled = !url.isBlank();
         String baseUrl = url.replaceAll("/+$", "");

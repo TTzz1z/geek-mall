@@ -1,0 +1,714 @@
+[
+  {
+    "id": "R2-001",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 的屏幕是几英寸？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "说明书概述：14英寸2.8K屏、约1.2kg、办公与轻度创作。"
+  },
+  {
+    "id": "R2-002",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 屏幕分辨率是多少？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "说明书概述：14英寸2.8K屏、约1.2kg、办公与轻度创作。"
+  },
+  {
+    "id": "R2-003",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 整机大约多重？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "说明书概述：14英寸2.8K屏、约1.2kg、办公与轻度创作。"
+  },
+  {
+    "id": "R2-004",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 适合什么使用场景？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "说明书概述：14英寸2.8K屏、约1.2kg、办公与轻度创作。"
+  },
+  {
+    "id": "R2-005",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "这款 Air 14 支持轻度创作吗？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "说明书概述：14英寸2.8K屏、约1.2kg、办公与轻度创作。"
+  },
+  {
+    "id": "R2-006",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "想了解 Air 14 的显示屏和重量。",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "说明书概述：14英寸2.8K屏、约1.2kg、办公与轻度创作。"
+  },
+  {
+    "id": "R2-007",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 办公场景续航约多少小时？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "续航分块：办公约12小时，支持PD快充，约40分钟充至50%。"
+  },
+  {
+    "id": "R2-008",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 是否支持 PD 快充？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "续航分块：办公约12小时，支持PD快充，约40分钟充至50%。"
+  },
+  {
+    "id": "R2-009",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 大概多久能充到一半电量？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "续航分块：办公约12小时，支持PD快充，约40分钟充至50%。"
+  },
+  {
+    "id": "R2-010",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 的续航与快充能力如何？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "续航分块：办公约12小时，支持PD快充，约40分钟充至50%。"
+  },
+  {
+    "id": "R2-011",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "说明书里的办公电池续航是多少？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "续航分块：办公约12小时，支持PD快充，约40分钟充至50%。"
+  },
+  {
+    "id": "R2-012",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 四十分钟大约能充到百分之几？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "续航分块：办公约12小时，支持PD快充，约40分钟充至50%。"
+  },
+  {
+    "id": "R2-013",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 使用什么 CPU？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-014",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 内存容量有多少？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-015",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 的内存是 LPDDR5x 吗？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-016",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 固态硬盘多大？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-017",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 配有几个雷电4接口？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-018",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 是否有 HDMI 接口？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-019",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 可以插 SD 卡吗？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-020",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "PRODUCT",
+    "query": "请列出 Air 14 的处理器、内存和存储规格。",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {},
+    "rationale": "参数表：酷睿Ultra7、32GB LPDDR5x、1TB SSD、双雷电4、HDMI、SD。"
+  },
+  {
+    "id": "R2-021",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "数码商品几天内可以无理由退货？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后规则：七天无理由且商品完好配件齐全，官方质保24个月。"
+  },
+  {
+    "id": "R2-022",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "无理由退货需要商品满足什么条件？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后规则：七天无理由且商品完好配件齐全，官方质保24个月。"
+  },
+  {
+    "id": "R2-023",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "数码商品的官方质保是多久？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后规则：七天无理由且商品完好配件齐全，官方质保24个月。"
+  },
+  {
+    "id": "R2-024",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "退货时配件需要齐全吗？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后规则：七天无理由且商品完好配件齐全，官方质保24个月。"
+  },
+  {
+    "id": "R2-025",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "商品不完好还能按七天无理由退货吗？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后规则：七天无理由且商品完好配件齐全，官方质保24个月。"
+  },
+  {
+    "id": "R2-026",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "官方保修是否有二十四个月？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后规则：七天无理由且商品完好配件齐全，官方质保24个月。"
+  },
+  {
+    "id": "R2-027",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "什么订单可以申请仅退款？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后流程：未发货可仅退款；退货退款须物流单号；AI不可正式退款。"
+  },
+  {
+    "id": "R2-028",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "退货退款前需要填写什么物流信息？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后流程：未发货可仅退款；退货退款须物流单号；AI不可正式退款。"
+  },
+  {
+    "id": "R2-029",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "AI 能直接发起正式退款吗？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后流程：未发货可仅退款；退货退款须物流单号；AI不可正式退款。"
+  },
+  {
+    "id": "R2-030",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "未发货时应该选择哪种退款类型？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后流程：未发货可仅退款；退货退款须物流单号；AI不可正式退款。"
+  },
+  {
+    "id": "R2-031",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "退货运单号是否是退货退款所需信息？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后流程：未发货可仅退款；退货退款须物流单号；AI不可正式退款。"
+  },
+  {
+    "id": "R2-032",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "售后机器人可以替用户执行正式退款吗？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {},
+    "rationale": "售后流程：未发货可仅退款；退货退款须物流单号；AI不可正式退款。"
+  },
+  {
+    "id": "R2-033",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "正式支付要去哪里确认？",
+    "relevance": {
+      "PAYMENT": 3
+    },
+    "expectedVersions": {},
+    "rationale": "支付发票规则：收银台用户确认，完成后申请发票，模拟及微信支付宝适配。"
+  },
+  {
+    "id": "R2-034",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "什么时候可以申请发票？",
+    "relevance": {
+      "PAYMENT": 3
+    },
+    "expectedVersions": {},
+    "rationale": "支付发票规则：收银台用户确认，完成后申请发票，模拟及微信支付宝适配。"
+  },
+  {
+    "id": "R2-035",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "平台支持哪些支付适配？",
+    "relevance": {
+      "PAYMENT": 3
+    },
+    "expectedVersions": {},
+    "rationale": "支付发票规则：收银台用户确认，完成后申请发票，模拟及微信支付宝适配。"
+  },
+  {
+    "id": "R2-036",
+    "split": "DEV",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "订单完成后能否申请发票？",
+    "relevance": {
+      "PAYMENT": 3
+    },
+    "expectedVersions": {},
+    "rationale": "支付发票规则：收银台用户确认，完成后申请发票，模拟及微信支付宝适配。"
+  },
+  {
+    "id": "R2-037",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "支付规则是否包含模拟支付？",
+    "relevance": {
+      "PAYMENT": 3
+    },
+    "expectedVersions": {},
+    "rationale": "支付发票规则：收银台用户确认，完成后申请发票，模拟及微信支付宝适配。"
+  },
+  {
+    "id": "R2-038",
+    "split": "TEST",
+    "category": "SUPPORTED",
+    "scope": "RULE",
+    "query": "微信和支付宝是否在支付适配范围？",
+    "relevance": {
+      "PAYMENT": 3
+    },
+    "expectedVersions": {},
+    "rationale": "支付发票规则：收银台用户确认，完成后申请发票，模拟及微信支付宝适配。"
+  },
+  {
+    "id": "R2-039",
+    "split": "DEV",
+    "category": "UNSUPPORTED",
+    "scope": "PRODUCT",
+    "query": "极客本 Air 14 的出厂 BIOS 密码是什么？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子语料未给出这些事实，相关来源应为空；不能以同商品来源充当该问题的答案。"
+  },
+  {
+    "id": "R2-040",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 显卡的显存有多少 GB？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子语料未给出这些事实，相关来源应为空；不能以同商品来源充当该问题的答案。"
+  },
+  {
+    "id": "R2-041",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 售价精确到元是多少？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子语料未给出这些事实，相关来源应为空；不能以同商品来源充当该问题的答案。"
+  },
+  {
+    "id": "R2-042",
+    "split": "DEV",
+    "category": "UNSUPPORTED",
+    "scope": "PRODUCT",
+    "query": "笔记本主板维修网点的电话号码是多少？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子语料未给出这些事实，相关来源应为空；不能以同商品来源充当该问题的答案。"
+  },
+  {
+    "id": "R2-043",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "PRODUCT",
+    "query": "笔记本通过了什么防水等级认证？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子语料未给出这些事实，相关来源应为空；不能以同商品来源充当该问题的答案。"
+  },
+  {
+    "id": "R2-044",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "PRODUCT",
+    "query": "Air 14 是否支持内存自行更换？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子语料未给出这些事实，相关来源应为空；不能以同商品来源充当该问题的答案。"
+  },
+  {
+    "id": "R2-045",
+    "split": "DEV",
+    "category": "UNSUPPORTED",
+    "scope": "RULE",
+    "query": "退货运费固定收取多少钱？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子规则未包含运费金额、退款到账时限、积分、优惠叠加、发票税率或境外规则。"
+  },
+  {
+    "id": "R2-046",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "RULE",
+    "query": "退款会在几个小时内到账？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子规则未包含运费金额、退款到账时限、积分、优惠叠加、发票税率或境外规则。"
+  },
+  {
+    "id": "R2-047",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "RULE",
+    "query": "积分和优惠券最多可以叠加几张？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子规则未包含运费金额、退款到账时限、积分、优惠叠加、发票税率或境外规则。"
+  },
+  {
+    "id": "R2-048",
+    "split": "DEV",
+    "category": "UNSUPPORTED",
+    "scope": "RULE",
+    "query": "电子发票使用什么增值税税率？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子规则未包含运费金额、退款到账时限、积分、优惠叠加、发票税率或境外规则。"
+  },
+  {
+    "id": "R2-049",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "RULE",
+    "query": "海外订单清关税由谁承担？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子规则未包含运费金额、退款到账时限、积分、优惠叠加、发票税率或境外规则。"
+  },
+  {
+    "id": "R2-050",
+    "split": "TEST",
+    "category": "UNSUPPORTED",
+    "scope": "RULE",
+    "query": "店铺退款失败应拨打哪个热线？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "种子规则未包含运费金额、退款到账时限、积分、优惠叠加、发票税率或境外规则。"
+  },
+  {
+    "id": "R2-051",
+    "split": "DEV",
+    "category": "CROSS_SCOPE",
+    "scope": "PRODUCT",
+    "query": "数码商品七天无理由退货需要配件齐全吗？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在RULE，PRODUCT范围不允许返回规则证据。"
+  },
+  {
+    "id": "R2-052",
+    "split": "TEST",
+    "category": "CROSS_SCOPE",
+    "scope": "PRODUCT",
+    "query": "官方质保二十四个月的退货规则是什么？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在RULE，PRODUCT范围不允许返回规则证据。"
+  },
+  {
+    "id": "R2-053",
+    "split": "TEST",
+    "category": "CROSS_SCOPE",
+    "scope": "PRODUCT",
+    "query": "正式支付必须由用户在收银台确认吗？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在RULE，PRODUCT范围不允许返回规则证据。"
+  },
+  {
+    "id": "R2-054",
+    "split": "DEV",
+    "category": "CROSS_SCOPE",
+    "scope": "PRODUCT",
+    "query": "订单完成后如何申请发票？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在RULE，PRODUCT范围不允许返回规则证据。"
+  },
+  {
+    "id": "R2-055",
+    "split": "DEV",
+    "category": "CROSS_SCOPE",
+    "scope": "RULE",
+    "query": "极客本 Air 14 有多少 GB LPDDR5x 内存？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在PRODUCT，RULE范围不允许返回商品证据。"
+  },
+  {
+    "id": "R2-056",
+    "split": "TEST",
+    "category": "CROSS_SCOPE",
+    "scope": "RULE",
+    "query": "极客本 Air 14 采用几英寸的 2.8K 屏？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在PRODUCT，RULE范围不允许返回商品证据。"
+  },
+  {
+    "id": "R2-057",
+    "split": "TEST",
+    "category": "CROSS_SCOPE",
+    "scope": "RULE",
+    "query": "Air 14 的固态硬盘是否为 1TB SSD？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在PRODUCT，RULE范围不允许返回商品证据。"
+  },
+  {
+    "id": "R2-058",
+    "split": "DEV",
+    "category": "CROSS_SCOPE",
+    "scope": "RULE",
+    "query": "Air 14 办公续航是不是十二小时？",
+    "relevance": {},
+    "expectedVersions": {},
+    "rationale": "答案只存在PRODUCT，RULE范围不允许返回商品证据。"
+  },
+  {
+    "id": "R2-059",
+    "split": "DEV",
+    "category": "VERSION",
+    "scope": "PRODUCT",
+    "query": "当前说明书版本中 Air 14 的办公续航是多少？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {
+      "SPU-1001": "1"
+    },
+    "rationale": "固定种子版本为1，版本切换/失败/回退另由KnowledgeIndexRecoveryTest验证。"
+  },
+  {
+    "id": "R2-060",
+    "split": "TEST",
+    "category": "VERSION",
+    "scope": "PRODUCT",
+    "query": "当前 Air 14 参数表记录的内存容量是什么？",
+    "relevance": {
+      "SPU-1001": 3
+    },
+    "expectedVersions": {
+      "SPU-1001": "1"
+    },
+    "rationale": "固定种子版本为1，版本切换/失败/回退另由KnowledgeIndexRecoveryTest验证。"
+  },
+  {
+    "id": "R2-061",
+    "split": "DEV",
+    "category": "VERSION",
+    "scope": "RULE",
+    "query": "当前售后规则允许 AI 正式退款吗？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {
+      "AFTERSALE": "1"
+    },
+    "rationale": "固定售后文档version_no为1；metadata中的2026.1不是文档版本号。"
+  },
+  {
+    "id": "R2-062",
+    "split": "TEST",
+    "category": "VERSION",
+    "scope": "RULE",
+    "query": "当前官方质保规则规定多少个月？",
+    "relevance": {
+      "AFTERSALE": 3
+    },
+    "expectedVersions": {
+      "AFTERSALE": "1"
+    },
+    "rationale": "固定售后文档version_no为1；metadata中的2026.1不是文档版本号。"
+  }
+]
