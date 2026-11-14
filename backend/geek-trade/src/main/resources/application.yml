@@ -9,6 +9,14 @@ spring:
     enabled: true
     locations: classpath:db/migration
   rabbitmq:
+    listener.simple:
+      acknowledge-mode: auto
+      retry.enabled: true
+      retry.initial-interval: 1000
+      retry.multiplier: 2
+      retry.max-attempts: 5
+      retry.max-interval: 30000
+      default-requeue-rejected: false
     publisher-returns: true
     template.mandatory: true
     connection-timeout: 3s

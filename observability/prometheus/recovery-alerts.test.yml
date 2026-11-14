@@ -1,0 +1,42 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'geek_trade_recovery_oldest_age_seconds{instance="trade"}'
+        values: '400+0x8'
+      - series: 'geek_trade_recovery_backlog{instance="trade",state="MANUAL"}'
+        values: '1+0x8'
+      - series: 'geek_trade_recovery_expired_leases{instance="trade"}'
+        values: '1+0x8'
+      - series: 'geek_trade_late_return_pending{instance="trade"}'
+        values: '1+0x8'
+      - series: 'geek_messaging_dead_letters{instance="trade",queue="trade.seckill.order.q.dlq"}'
+        values: '1+0x8'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TradeRecoveryBacklogAged
+        exp_alerts:
+          - exp_labels: {instance: trade, severity: warning}
+            exp_annotations: {summary: "Trade recovery tasks have waited over five minutes"}
+      - eval_time: 6m
+        alertname: TradeRecoveryManualAttention
+        exp_alerts:
+          - exp_labels: {instance: trade, state: MANUAL, severity: warning}
+            exp_annotations: {summary: "Trade recovery requires manual review"}
+      - eval_time: 6m
+        alertname: TradeRecoveryLeaseExpired
+        exp_alerts:
+          - exp_labels: {instance: trade, severity: warning}
+            exp_annotations: {summary: "Trade recovery lease takeover is overdue"}
+      - eval_time: 6m
+        alertname: TradeLateReturnPending
+        exp_alerts:
+          - exp_labels: {instance: trade, severity: warning}
+            exp_annotations: {summary: "Late payment returns are awaiting recovery"}
+      - eval_time: 6m
+        alertname: DomainEventDeadLetters
+        exp_alerts:
+          - exp_labels: {instance: trade, queue: trade.seckill.order.q.dlq, severity: warning}
+            exp_annotations: {summary: "Domain event delivery requires replay review"}

@@ -23,3 +23,38 @@ groups:
           severity: warning
         annotations:
           summary: "AI service unavailable (non-blocking for trade)"
+      - alert: TradeRecoveryBacklogAged
+        expr: geek_trade_recovery_oldest_age_seconds > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Trade recovery tasks have waited over five minutes"
+      - alert: TradeRecoveryManualAttention
+        expr: geek_trade_recovery_backlog{state="MANUAL"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Trade recovery requires manual review"
+      - alert: TradeRecoveryLeaseExpired
+        expr: geek_trade_recovery_expired_leases > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Trade recovery lease takeover is overdue"
+      - alert: TradeLateReturnPending
+        expr: geek_trade_late_return_pending > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Late payment returns are awaiting recovery"
+      - alert: DomainEventDeadLetters
+        expr: geek_messaging_dead_letters > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Domain event delivery requires replay review"
