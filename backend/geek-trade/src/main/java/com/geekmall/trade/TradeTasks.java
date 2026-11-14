@@ -63,7 +63,7 @@ class TradeTasks {
     int finish(long id, String token, String status, String error) {
         return jdbc.update("""
                 UPDATE trade_compensation_task SET status=?,last_error=?,lease_token=NULL,lease_until=NULL,
-                    updated_at=CURRENT_TIMESTAMP WHERE id=? AND lease_token=?
+                    updated_at=CURRENT_TIMESTAMP WHERE id=? AND lease_token=? AND status='RUNNING' AND lease_until>CURRENT_TIMESTAMP(3)
                 """, status, error, id, token);
     }
 }

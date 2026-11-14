@@ -48,7 +48,7 @@ class PaymentCallbackIdempotencyTest {
         MemberClient member = mock(MemberClient.class);
         ObjectMapper mapper = new ObjectMapper();
         TradeEventStore events = new TradeEventStore(jdbc, mapper);
-        UnavailableRealPaymentAdapters adapters = new UnavailableRealPaymentAdapters(List.of(new SimulatedPaymentChannelAdapter()));
+        UnavailableRealPaymentAdapters adapters = new UnavailableRealPaymentAdapters(List.of(new SimulatedPaymentChannelAdapter(jdbc)));
         String secret = "test-callback-secret";
         var tasks = new TradeTasks(jdbc, 120);
         PaymentService service = new PaymentService(

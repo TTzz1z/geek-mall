@@ -21,6 +21,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class InventoryReservationConcurrencyTest {
+    @Test void inconsistentReleaseRollsBackReservationAndCloseFence() {
+        var ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:inventory_bad_release;MODE=MySQL;DB_CLOSE_DELAY=-1");
+        var jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE inventory_reservation_lock(order_id BIGINT PRIMARY KEY,closed BOOLEAN DEFAULT FALSE NOT NULL)");
+        jdbc.execute("CREATE TABLE inventory_stock_reservation(id BIGINT PRIMARY KEY,order_no VARCHAR(64),merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,quantity INT,status VARCHAR(32),updated_at TIMESTAMP)");
+        jdbc.execute("CREATE TABLE inventory_sku_stock(merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,locked_qty INT,version INT,updated_at TIMESTAMP)");
+        jdbc.update("INSERT INTO inventory_stock_reservation VALUES(1,'GM-BAD',2,3,4,5,'RESERVED',CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO inventory_sku_stock VALUES(2,3,4,0,0,CURRENT_TIMESTAMP)");
+        var service = new InventoryService(jdbc, new ObjectMapper());
+        var tx = new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(ds));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> tx.execute(s -> service.release("GM-BAD", 1)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("释放");
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory_stock_reservation", String.class)).isEqualTo("RESERVED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_reservation_lock", Integer.class)).isZero();
+    }
     @Test
     void releaseBeforeDelayedReservationPermanentlyClosesOrder() {
         JdbcDataSource ds = new JdbcDataSource();

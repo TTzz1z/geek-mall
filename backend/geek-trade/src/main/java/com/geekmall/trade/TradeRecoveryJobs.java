@@ -64,15 +64,11 @@ class TradeRecoveryJobs {
             String no = String.valueOf(row.get("business_no"));
             try {
                 switch (type) {
-                    case "RESERVE_STOCK" -> orders.resumeReservation(no);
+                    case "RESERVE_STOCK" -> orders.resumeReservation(no, id, token);
                     case "CREATE_SECKILL_ORDER" -> seckillOrders.resume(no, id, token);
                     case "RELEASE_STOCK" -> {
-                        if (no.startsWith("SK")) {
-                            long orderId = jdbc.queryForObject("SELECT id FROM trade_order WHERE order_no=?", Long.class, no);
-                            inventory.release(no, orderId);
-                        } else {
-                            inventory.release(no);
-                        }
+                        long orderId = jdbc.queryForObject("SELECT id FROM trade_order WHERE order_no=?", Long.class, no);
+                        inventory.release(no, orderId);
                         jdbc.update("UPDATE trade_order SET inventory_status='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE order_no=? AND status='CANCELLED'", no);
                     }
                     case "DEDUCT_STOCK" -> {
@@ -100,6 +96,7 @@ class TradeRecoveryJobs {
                         payments.createFulfillments(no);
                     }
                     case "REFUND" -> retryRefund(no);
+                    case "PAYMENT_AFTER_CLOSE" -> payments.returnLatePayment(no);
                     case "ORDER_SETTLEMENT" -> settleOrder(no);
                     case "RELEASE_SECKILL" -> seckillOrders.release(no, String.valueOf(row.get("payload_json")));
                     case "RELEASE_ASSETS" -> {

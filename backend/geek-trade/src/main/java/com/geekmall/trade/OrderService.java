@@ -16,15 +16,15 @@ import java.math.BigDecimal;import java.time.Instant;import java.util.*;
          String token = tasks.claim(taskId);
          if (token == null) return detail(userId,prepared.orderNo());
          try {
-             reserveAndActivate(prepared);
+             reserveAndActivate(prepared,taskId,token);
              tasks.finish(taskId,token,"SUCCESS",null);
          } catch(BusinessException e) {
              if(e.code().contains("409")) {
-                 tx.executeWithoutResult(s->failStock(prepared.orderId(),prepared.orderNo(),e.getMessage()));
+                 tx.executeWithoutResult(s->{if(tasks.owns(taskId,token))failStock(prepared.orderId(),prepared.orderNo(),e.getMessage());});
                  tasks.finish(taskId,token,"SUCCESS",null);
                  throw e;
              }
-             jdbc.update("UPDATE trade_order SET status='RESERVATION_RETRY',updated_at=CURRENT_TIMESTAMP WHERE order_no=? AND status='RESERVING'",prepared.orderNo());
+             tx.executeWithoutResult(s->{if(tasks.owns(taskId,token))jdbc.update("UPDATE trade_order SET status='RESERVATION_RETRY',updated_at=CURRENT_TIMESTAMP WHERE order_no=? AND status='RESERVING'",prepared.orderNo());});
          } finally {
              jdbc.update("""
                      UPDATE trade_compensation_task SET status='RETRY',lease_token=NULL,lease_until=NULL,
@@ -57,19 +57,20 @@ import java.math.BigDecimal;import java.time.Instant;import java.util.*;
      events.append("TRADE_ORDER",orderNo,"trade.order.cancelled.v1",Map.of("orderNo",orderNo,"reason","STOCK_FAILED"));
  }
 
- void resumeReservation(String orderNo) {
+ void resumeReservation(String orderNo,long taskId,String token) {
      Map<String,Object> order=internalOrder(orderNo);
      if(!Set.of("RESERVING","RESERVATION_RETRY").contains(order.get("status"))) return;
      Prepared prepared=existingPrepared(orderNo);
      try {
-         reserveAndActivate(prepared);
+         reserveAndActivate(prepared,taskId,token);
      } catch(BusinessException e) {
          if(!e.code().contains("409")) throw e;
-         tx.executeWithoutResult(s->failStock(prepared.orderId(),orderNo,e.getMessage()));
+         tx.executeWithoutResult(s->{if(tasks.owns(taskId,token))failStock(prepared.orderId(),orderNo,e.getMessage());});
      }
  }
 
- private void reserveAndActivate(Prepared prepared) {
+ private void reserveAndActivate(Prepared prepared,long taskId,String token) {
+     if(!Boolean.TRUE.equals(tx.execute(s->tasks.owns(taskId,token))))return;
      CheckoutPayload payload=prepared.payload();
      String orderNo=prepared.orderNo();
      long userId=jdbc.queryForObject("SELECT user_id FROM trade_order WHERE id=?",Long.class,prepared.orderId());
@@ -79,7 +80,7 @@ import java.math.BigDecimal;import java.time.Instant;import java.util.*;
              "shopId",i.shopId(),"skuId",i.skuId(),"quantity",i.quantity())).toList();
      Instant expires=Instant.now().plusSeconds(timeoutSeconds);
      var allocations=inventory.reserve(prepared.orderId(),orderNo,payload.address().regionCode(),expires,items);
-     tx.executeWithoutResult(s->activate(prepared,allocations,expires));
+     tx.executeWithoutResult(s->{if(tasks.owns(taskId,token))activate(prepared,allocations,expires);});
  }
 
  void cancel(long userId,String orderNo,String operator) {
@@ -88,7 +89,7 @@ import java.math.BigDecimal;import java.time.Instant;import java.util.*;
          long id=number(order.get("id"));
          String current=String.valueOf(order.get("status"));
          if("CANCELLED".equals(current))return;
-         if(!"PENDING_PAYMENT".equals(current))throw new BusinessException("TR40907","当前订单状态不可取消");
+         if(!Set.of("PENDING_PAYMENT","RESERVING","RESERVATION_RETRY").contains(current))throw new BusinessException("TR40907","当前订单状态不可取消");
          jdbc.update("""
                  UPDATE trade_order SET status='CANCELLED',inventory_status='RELEASE_PENDING',
                    version=version+1,closed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?

@@ -43,6 +43,70 @@ class SeckillRecoveryIT {
     private TradeEventStore events;
     private TradeTasks tasks;
 
+    @Test
+    void ordinaryReservationCannotActivateAfterLeaseWasReplaced() {
+        var orders = ordinaryOrder();
+        long id = jdbc.queryForObject("SELECT id FROM trade_compensation_task", Long.class);
+        String token = tasks.claim(id);
+        when(inventory.reserve(anyLong(), eq("GM61"), anyString(), any(), anyList())).thenAnswer(call -> {
+            assertNoTransaction();
+            jdbc.update("UPDATE trade_compensation_task SET lease_until=TIMESTAMPADD(SECOND,-1,NOW()) WHERE id=?", id);
+            assertThat(tasks.claim(id)).isNotBlank();
+            return List.of();
+        });
+        orders.resumeReservation("GM61", id, token);
+        assertThat(jdbc.queryForObject("SELECT status FROM trade_order WHERE id=61", String.class)).isEqualTo("RESERVING");
+        assertThat(count("event_outbox")).isZero();
+        assertThat(tasks.finish(id, token, "SUCCESS", null)).isZero();
+    }
+
+    @Test
+    void ordinaryCancellationDuringAmbiguousReservationSchedulesAllCloseFences() {
+        var orders = ordinaryOrder();
+        long id = jdbc.queryForObject("SELECT id FROM trade_compensation_task", Long.class);
+        String token = tasks.claim(id);
+        when(inventory.reserve(anyLong(), eq("GM61"), anyString(), any(), anyList())).thenAnswer(call -> {
+            assertNoTransaction();
+            orders.cancel(4, "GM61", "USER");
+            return List.of();
+        });
+        orders.resumeReservation("GM61", id, token);
+        assertThat(jdbc.queryForObject("SELECT status FROM trade_order WHERE id=61", String.class)).isEqualTo("CANCELLED");
+        var worker = new TradeRecoveryJobs(jdbc, orders, inventory, mock(RefundService.class), marketing, member,
+                mock(PaymentService.class), mock(SettlementClient.class), service(), mapper, tasks);
+        worker.compensate();
+        verify(inventory).release("GM61", 61);
+        verify(marketing).settleCoupon("GM61", "release");
+        verify(member).settlePoints("GM61", "release");
+        assertThat(jdbc.queryForObject("SELECT inventory_status FROM trade_order WHERE id=61", String.class)).isEqualTo("RELEASED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM event_outbox WHERE event_type='trade.order.created.v1'", Integer.class)).isZero();
+    }
+
+    @Test
+    void migrationBackfillsEachHistoricalLatePaymentAndSupersedesOrderTask() {
+        flyway(null).clean();
+        flyway("7").migrate();
+        jdbc.update("INSERT INTO trade_order(id,order_no,user_id,total_amount,payable_amount,status,checkout_token,inventory_status,created_at,updated_at) VALUES(61,'GM61',4,10,10,'CANCELLED','old-checkout','RELEASED',NOW(),NOW())");
+        for (long id : List.of(71L, 72L)) jdbc.update("INSERT INTO trade_payment(id,payment_no,order_id,user_id,channel,merchant_no,amount,status,channel_trade_no,created_at,updated_at) VALUES(?,?,61,4,'SIMULATED','GEEK-MALL',10,'LATE_SUCCESS',?,NOW(),NOW())", id, "PAY" + id, "MOCK" + id);
+        tasks.enqueue("PAYMENT_AFTER_CLOSE", "GM61");
+        jdbc.update("UPDATE trade_compensation_task SET status='MANUAL'");
+        flyway(null).migrate();
+        assertThat(jdbc.queryForList("SELECT payment_no FROM trade_late_payment_return", String.class)).containsExactlyInAnyOrder("PAY71", "PAY72");
+        assertThat(jdbc.queryForList("SELECT business_no FROM trade_compensation_task WHERE task_type='PAYMENT_AFTER_CLOSE' AND status='PENDING'", String.class)).containsExactlyInAnyOrder("PAY71", "PAY72");
+        assertThat(jdbc.queryForObject("SELECT status FROM trade_compensation_task WHERE business_no='GM61'", String.class)).isEqualTo("SUCCESS");
+    }
+
+    private OrderService ordinaryOrder() {
+        jdbc.update("INSERT INTO trade_checkout_snapshot(id,checkout_token,user_id,request_hash,snapshot_json,status,result_order_no,expires_at,created_at) VALUES(91,'ordinary-checkout',4,'hash','{}','CONSUMED','GM61',TIMESTAMPADD(SECOND,600,NOW()),NOW())");
+        jdbc.update("INSERT INTO trade_order(id,order_no,user_id,total_amount,payable_amount,status,checkout_token,inventory_status,created_at,updated_at) VALUES(61,'GM61',4,10,10,'RESERVING','ordinary-checkout','RESERVING',NOW(),NOW())");
+        tasks.enqueue("RESERVE_STOCK", "GM61");
+        var checkout = mock(CheckoutService.class);
+        when(checkout.payload(anyString())).thenReturn(new CheckoutPayload("ordinary-checkout", Instant.now().plusSeconds(600),
+                new CheckoutAddress(7L,"fixture","13800000000","310000","fixture"),BigDecimal.TEN,BigDecimal.ZERO,
+                BigDecimal.ZERO,BigDecimal.TEN,"NONE","NONE",null,0,List.of(),List.of(),List.of()));
+        return new OrderService(jdbc, checkout, inventory, events, mapper, manager, marketing, member, tasks, 600);
+    }
+
     @BeforeEach
     void setup() {
         flyway(null).clean();
@@ -151,7 +215,7 @@ class SeckillRecoveryIT {
 
     @Test
     void duplicateConsumersPersistOneIntentAndRejectChangedRequest() throws Exception {
-        String body = mapper.writeValueAsString(Map.of("eventId", "same-event", "payload", payload()));
+        String body = mapper.writeValueAsString(Map.of("eventId", "same-event", "eventType", TradeRabbitConfiguration.SECKILL_ROUTING, "payload", payload()));
         var consumer = new SeckillOrderConsumer(jdbc, mapper, service());
         var start = new CountDownLatch(1);
         try (var pool = Executors.newFixedThreadPool(8)) {

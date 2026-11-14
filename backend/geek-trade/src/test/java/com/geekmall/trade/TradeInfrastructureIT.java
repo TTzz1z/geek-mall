@@ -74,7 +74,7 @@ class TradeInfrastructureIT {
         var member = mock(MemberClient.class);
         var fulfillment = mock(PaymentService.class);
         var mapper = new ObjectMapper();
-        var adapter = new UnavailableRealPaymentAdapters(List.of(new SimulatedPaymentChannelAdapter()));
+        var adapter = new UnavailableRealPaymentAdapters(List.of(new SimulatedPaymentChannelAdapter(jdbc)));
         var payment = new PaymentService(jdbc, new DataSourceTransactionManager(jdbc.getDataSource()), adapter,
                 inventory, new TradeEventStore(jdbc, mapper), new TradeTasks(jdbc, 120), "GEEK-MALL", "fixture-secret");
         assertThat(payment.simulate(4, "PAY-RECOVERY-IT")).containsEntry("idempotentReplay", false);

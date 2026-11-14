@@ -63,6 +63,10 @@ class MemberController {
                                             HttpServletRequest r) {
         requireInternal(key);
         if (points <= 0) throw new BusinessException("MB40001", "积分必须为正数");
+        lockOrder(orderNo, false);
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT closed FROM member_point_order_lock WHERE order_no=?", Boolean.class, orderNo))) {
+            throw new BusinessException("MB40903", "订单积分预留已关闭");
+        }
         ensure(userId);
         jdbc.queryForObject("SELECT user_id FROM member_profile WHERE user_id=? FOR UPDATE", Long.class, userId);
         var old = jdbc.queryForList("SELECT user_id,points,status FROM member_point_reservation WHERE order_no=? FOR UPDATE", orderNo);
@@ -93,6 +97,7 @@ class MemberController {
                                             @PathVariable String action,
                                             HttpServletRequest r) {
         requireInternal(key);
+        lockOrder(orderNo, "release".equals(action) || "refund".equals(action));
         var rows = jdbc.queryForList("SELECT user_id,points,status FROM member_point_reservation WHERE order_no=? FOR UPDATE", orderNo);
         if (rows.isEmpty()) {
             if ("release".equals(action) || "refund".equals(action)) {
@@ -128,6 +133,10 @@ class MemberController {
 
     private void requireInternal(String key) {
         if (key == null || !internalKey.equals(key)) throw new BusinessException("AU40304", "内部服务凭证无效");
+    }
+
+    private void lockOrder(String orderNo, boolean close) {
+        jdbc.update("INSERT INTO member_point_order_lock(order_no,closed) VALUES(?,?) ON DUPLICATE KEY UPDATE closed=closed OR VALUES(closed)", orderNo, close);
     }
 
     private void ensure(long userId) {

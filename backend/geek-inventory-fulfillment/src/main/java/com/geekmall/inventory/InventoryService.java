@@ -150,7 +150,8 @@ class InventoryService {
             int changed = jdbc.update("UPDATE inventory_stock_reservation SET status='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='RESERVED'", row.get("id"));
             if (changed == 0) continue;
             int quantity = number(row.get("quantity"));
-            jdbc.update("UPDATE inventory_sku_stock SET locked_qty=locked_qty-?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE warehouse_id=? AND sku_id=? AND merchant_id=? AND locked_qty>=?", quantity, row.get("warehouse_id"), row.get("sku_id"), row.get("merchant_id"), quantity);
+            int stockChanged = jdbc.update("UPDATE inventory_sku_stock SET locked_qty=locked_qty-?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE warehouse_id=? AND sku_id=? AND merchant_id=? AND locked_qty>=?", quantity, row.get("warehouse_id"), row.get("sku_id"), row.get("merchant_id"), quantity);
+            if (stockChanged != 1) throw new BusinessException("IV40906", "预占库存释放状态异常");
             stockLog(((Number) row.get("merchant_id")).longValue(), ((Number) row.get("warehouse_id")).longValue(), ((Number) row.get("sku_id")).longValue(), "RELEASE", orderNo, 0, -quantity);
             affected++;
         }
