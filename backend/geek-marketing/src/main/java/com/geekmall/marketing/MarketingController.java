@@ -145,7 +145,7 @@ class MarketingController {
                     "INSERT INTO marketing_seckill_order(id,session_id,sku_id,user_id,quantity,request_id,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,'QUEUED',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                     id, body.sessionId(), skuId, p.userId(), body.quantity(), requestId, Timestamp.from(expires));
         } catch (Exception e) {
-            seckill.release(body.sessionId(), skuId, p.userId(), body.quantity());
+            seckill.undoUncommittedHold(body.sessionId(), skuId, p.userId(), body.quantity());
             throw new BusinessException("MK40904", "秒杀请求重复");
         }
         events.append("SECKILL_ORDER", String.valueOf(id), MarketingRabbitConfiguration.SECKILL_ROUTING, Map.of(

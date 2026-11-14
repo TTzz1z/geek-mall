@@ -85,6 +85,7 @@ class RedisLuaClient {
         int p = in.read();
         if (p == '-') throw new IOException(line(in));
         String v = line(in);
+        if (p == '+') return v;
         if (p == ':') return Long.valueOf(v);
         if (p == '$') {
             int n = Integer.parseInt(v);

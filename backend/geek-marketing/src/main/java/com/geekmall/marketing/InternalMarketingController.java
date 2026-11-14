@@ -68,12 +68,33 @@ class InternalMarketingController {
                                                  @PathVariable long seckillOrderId,
                                                  @RequestParam String tradeOrderNo) {
         require(key);
-        jdbc.update("UPDATE marketing_seckill_order SET status='CREATED',trade_order_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='QUEUED'", tradeOrderNo, seckillOrderId);
+        confirmSeckill("id", seckillOrderId, tradeOrderNo);
         return ApiResponse.success(Map.of("seckillOrderId", seckillOrderId, "tradeOrderNo", tradeOrderNo), null);
     }
 
-    @PostMapping("/seckill/release")
+    @PostMapping("/seckill/requests/{requestId}/created")
     @Transactional
+    ApiResponse<Map<String, Object>> markCreatedByRequest(@RequestHeader("X-Internal-Key") String key,
+                                                          @PathVariable String requestId,
+                                                          @RequestParam String tradeOrderNo) {
+        require(key);
+        confirmSeckill("request_id", requestId, tradeOrderNo);
+        return ApiResponse.success(Map.of("requestId", requestId, "tradeOrderNo", tradeOrderNo), null);
+    }
+
+    private void confirmSeckill(String column, Object value, String tradeOrderNo) {
+        var rows = jdbc.queryForList("SELECT id,status,trade_order_no,CASE WHEN expires_at<=CURRENT_TIMESTAMP THEN 1 ELSE 0 END AS expired FROM marketing_seckill_order WHERE " + column + "=? FOR UPDATE", value);
+        if (rows.isEmpty()) throw new BusinessException("MK40905", "秒杀请求不存在或已失效");
+        var row = rows.getFirst();
+        if ("CREATED".equals(row.get("status")) && tradeOrderNo.equals(row.get("trade_order_no"))) return;
+        if (!"QUEUED".equals(row.get("status"))) throw new BusinessException("MK40905", "秒杀请求状态与交易订单冲突");
+        if (((Number) row.get("expired")).intValue() == 1) {
+            throw new BusinessException("MK40905", "秒杀请求已过期");
+        }
+        jdbc.update("UPDATE marketing_seckill_order SET status='CREATED',trade_order_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", tradeOrderNo, row.get("id"));
+    }
+
+    @PostMapping("/seckill/release")
     ApiResponse<Map<String, Object>> releaseSeckill(@RequestHeader("X-Internal-Key") String key,
                                                      @RequestBody Map<String, Object> body) {
         require(key);
@@ -138,7 +159,7 @@ class InternalMarketingController {
             jdbc.update("INSERT INTO marketing_seckill_order(id,session_id,sku_id,user_id,quantity,request_id,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,'QUEUED',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                     id, sessionId, skuId, userId, quantity, requestId, java.sql.Timestamp.from(expires));
         } catch (Exception e) {
-            redis.eval("redis.call('INCRBY',KEYS[1],ARGV[1]); redis.call('DECRBY',KEYS[2],ARGV[1]); return 1", List.of(stock, limit), List.of(String.valueOf(quantity)));
+            seckillInventory.undoUncommittedHold(sessionId, skuId, userId, quantity);
             throw new BusinessException("MK40904", "秒杀请求重复");
         }
         events.append("SECKILL_ORDER", String.valueOf(id), MarketingRabbitConfiguration.SECKILL_ROUTING,

@@ -48,6 +48,11 @@ class MarketingClient {
                 .header("X-Internal-Key", internalKey).retrieve().body(JsonNode.class));
     }
 
+    void markSeckillCreated(String requestId, String tradeOrderNo) {
+        data(() -> client.post().uri("/api/v1/internal/marketing/seckill/requests/{requestId}/created?tradeOrderNo={orderNo}", requestId, tradeOrderNo)
+                .header("X-Internal-Key", internalKey).retrieve().body(JsonNode.class));
+    }
+
     void releaseSeckill(long sessionId, long skuId, long userId, int quantity) {
         data(() -> client.post().uri("/api/v1/internal/marketing/seckill/release")
                 .header("X-Internal-Key", internalKey).contentType(MediaType.APPLICATION_JSON)

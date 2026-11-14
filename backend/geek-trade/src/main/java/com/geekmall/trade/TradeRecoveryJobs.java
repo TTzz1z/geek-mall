@@ -55,7 +55,7 @@ class TradeRecoveryJobs {
     @Scheduled(fixedDelayString = "${geek.compensation.interval:5000}")
     void compensate() {
         for (Map<String, Object> row : jdbc.queryForList("""
-                SELECT id,task_type,business_no FROM trade_compensation_task WHERE
+                SELECT id,task_type,business_no,payload_json FROM trade_compensation_task WHERE
                 """ + TradeTasks.DUE + " ORDER BY next_retry_at,id LIMIT 50")) {
             long id = ((Number) row.get("id")).longValue();
             String token = tasks.claim(id);
@@ -65,8 +65,14 @@ class TradeRecoveryJobs {
             try {
                 switch (type) {
                     case "RESERVE_STOCK" -> orders.resumeReservation(no);
+                    case "CREATE_SECKILL_ORDER" -> seckillOrders.resume(no, id, token);
                     case "RELEASE_STOCK" -> {
-                        inventory.release(no);
+                        if (no.startsWith("SK")) {
+                            long orderId = jdbc.queryForObject("SELECT id FROM trade_order WHERE order_no=?", Long.class, no);
+                            inventory.release(no, orderId);
+                        } else {
+                            inventory.release(no);
+                        }
                         jdbc.update("UPDATE trade_order SET inventory_status='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE order_no=? AND status='CANCELLED'", no);
                     }
                     case "DEDUCT_STOCK" -> {
@@ -95,7 +101,7 @@ class TradeRecoveryJobs {
                     }
                     case "REFUND" -> retryRefund(no);
                     case "ORDER_SETTLEMENT" -> settleOrder(no);
-                    case "RELEASE_SECKILL" -> seckillOrders.onTimeoutCancel(no);
+                    case "RELEASE_SECKILL" -> seckillOrders.release(no, String.valueOf(row.get("payload_json")));
                     case "RELEASE_ASSETS" -> {
                         marketing.settleCoupon(no, "release");
                         member.settlePoints(no, "release");

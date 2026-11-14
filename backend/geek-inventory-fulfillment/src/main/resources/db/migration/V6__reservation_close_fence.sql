@@ -1,0 +1,1 @@
+ALTER TABLE inventory_reservation_lock ADD COLUMN closed BOOLEAN NOT NULL DEFAULT FALSE;

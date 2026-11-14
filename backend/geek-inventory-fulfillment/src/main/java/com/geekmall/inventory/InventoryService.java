@@ -105,6 +105,9 @@ class InventoryService {
                 INSERT INTO inventory_reservation_lock(order_id) VALUES(?)
                 ON DUPLICATE KEY UPDATE order_id=order_id
                 """, request.orderId());
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT closed FROM inventory_reservation_lock WHERE order_id=?", Boolean.class, request.orderId()))) {
+            throw new BusinessException("IV40905", "订单库存预占已关闭");
+        }
         List<Map<String, Object>> existing = reservations(request.orderNo());
         if (!existing.isEmpty()) return Map.of("orderNo", request.orderNo(), "reservationNo", "RS" + request.orderId(), "idempotentReplay", true, "allocations", existing);
 
@@ -153,6 +156,15 @@ class InventoryService {
         }
         if (affected > 0) event(orderNo, "inventory.stock.released.v1", Map.of("orderNo", orderNo));
         return Map.of("orderNo", orderNo, "released", affected, "idempotentReplay", affected == 0);
+    }
+
+    @Transactional
+    Map<String, Object> release(String orderNo, long orderId) {
+        jdbc.update("""
+                INSERT INTO inventory_reservation_lock(order_id,closed) VALUES(?,TRUE)
+                ON DUPLICATE KEY UPDATE closed=TRUE
+                """, orderId);
+        return release(orderNo);
     }
 
     @Transactional

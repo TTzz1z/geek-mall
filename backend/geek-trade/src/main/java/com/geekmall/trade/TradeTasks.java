@@ -27,18 +27,27 @@ class TradeTasks {
     }
 
     void enqueue(String type, String businessNo, String error) {
+        enqueue(type, businessNo, "{}", error);
+    }
+
+    void enqueue(String type, String businessNo, String payload, String error) {
         try {
             jdbc.update("""
                     INSERT INTO trade_compensation_task
                     (id,task_type,business_no,payload_json,status,next_retry_at,last_error,created_at,updated_at)
-                    VALUES(?,?,?,'{}','PENDING',CURRENT_TIMESTAMP,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
-                    """, DistributedId.next(), type, businessNo, error);
+                    VALUES(?,?,?,?,'PENDING',CURRENT_TIMESTAMP,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                    """, DistributedId.next(), type, businessNo, payload, error);
         } catch (DuplicateKeyException duplicate) {
             if (jdbc.queryForList("SELECT id FROM trade_compensation_task WHERE task_type=? AND business_no=? FOR UPDATE",
                     type, businessNo).isEmpty()) {
                 throw duplicate;
             }
         }
+    }
+
+    boolean owns(long id, String token) {
+        return !jdbc.queryForList("SELECT id FROM trade_compensation_task WHERE id=? AND lease_token=? AND status='RUNNING' AND lease_until>CURRENT_TIMESTAMP(3) FOR UPDATE",
+                id, token).isEmpty();
     }
 
     String claim(long id) {

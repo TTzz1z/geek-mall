@@ -32,9 +32,9 @@ class SeckillWarmupJob {
     @Scheduled(fixedDelayString = "${geek.seckill.timeout-interval:5000}")
     void releaseExpired() {
         for (var row : jdbc.queryForList(
-                "SELECT session_id AS sessionId,sku_id AS skuId,user_id AS userId,quantity FROM marketing_seckill_order WHERE status='QUEUED' AND expires_at IS NOT NULL AND expires_at<=CURRENT_TIMESTAMP LIMIT 50")) {
+                "SELECT session_id AS sessionId,sku_id AS skuId,user_id AS userId,quantity FROM marketing_seckill_order WHERE status='RELEASE_PENDING' OR (status='QUEUED' AND expires_at<=CURRENT_TIMESTAMP) ORDER BY updated_at,id LIMIT 50")) {
             try {
-                seckillInventory.release(((Number) row.get("sessionId")).longValue(), ((Number) row.get("skuId")).longValue(),
+                seckillInventory.releaseExpired(((Number) row.get("sessionId")).longValue(), ((Number) row.get("skuId")).longValue(),
                         ((Number) row.get("userId")).longValue(), ((Number) row.get("quantity")).intValue());
             } catch (Exception ignored) {
             }

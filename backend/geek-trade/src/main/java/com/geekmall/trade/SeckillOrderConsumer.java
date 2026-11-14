@@ -33,7 +33,7 @@ class SeckillOrderConsumer {
             return;
         }
         JsonNode payload = event.path("payload");
-        seckillOrders.createFromEvent(mapper.convertValue(payload, java.util.Map.class));
+        seckillOrders.enqueue(payload);
         jdbc.update("UPDATE trade_event_consume_log SET result='SUCCESS',processed_at=CURRENT_TIMESTAMP WHERE consumer_group=? AND event_id=?", GROUP, eventId);
     }
 }
