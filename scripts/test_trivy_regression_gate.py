@@ -28,5 +28,28 @@ class GateTest(unittest.TestCase):
             report("head.json", "/head/other/pom.xml", "HIGH")
             self.assertEqual(subprocess.run(args, capture_output=True).returncode, 1)
 
+    def test_duplicate_findings_use_highest_severity_in_either_order(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("ACCEPTANCE_TEMP_DIR")) as directory:
+            root = Path(directory)
+            base, head = root / "base.json", root / "head.json"
+
+            def report(path, severities):
+                path.write_text(json.dumps({"Results": [{"Target": "app.jar", "Vulnerabilities": [
+                    {"PkgName": "dep", "VulnerabilityID": "CVE-TEST", "Severity": severity}
+                    for severity in severities
+                ]}]}), encoding="utf-8")
+
+            args = [sys.executable, str(GATE), str(base), str(head)]
+            report(base, ["HIGH"])
+            for severities in (["HIGH", "CRITICAL"], ["CRITICAL", "HIGH"]):
+                with self.subTest(current=severities):
+                    report(head, severities)
+                    self.assertEqual(subprocess.run(args, capture_output=True).returncode, 1)
+                with self.subTest(baseline=severities):
+                    report(base, severities)
+                    report(head, ["CRITICAL"])
+                    self.assertEqual(subprocess.run(args, capture_output=True).returncode, 0)
+                    report(base, ["HIGH"])
+
 if __name__ == "__main__":
     unittest.main()

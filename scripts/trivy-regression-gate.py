@@ -13,12 +13,16 @@ def findings(path, root=""):
         return normalized.removeprefix("./")
 
     report = json.loads(Path(path).read_text(encoding="utf-8"))
-    return {
-        (target_name(result["Target"]), item["PkgName"], item["VulnerabilityID"]): item["Severity"]
-        for result in report["Results"] or []
-        for item in result.get("Vulnerabilities") or []
-        if item["Severity"] in {"HIGH", "CRITICAL"}
-    }
+    findings_by_key = {}
+    for result in report["Results"] or []:
+        for item in result.get("Vulnerabilities") or []:
+            severity = item["Severity"]
+            if severity not in {"HIGH", "CRITICAL"}:
+                continue
+            key = (target_name(result["Target"]), item["PkgName"], item["VulnerabilityID"])
+            if key not in findings_by_key or severity == "CRITICAL":
+                findings_by_key[key] = severity
+    return findings_by_key
 
 
 baseline = findings(sys.argv[1], sys.argv[3] if len(sys.argv) > 3 else "")
