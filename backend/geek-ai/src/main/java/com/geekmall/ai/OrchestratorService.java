@@ -15,8 +15,13 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import jakarta.annotation.PreDestroy;
 
 @Service
 public class OrchestratorService {
@@ -25,26 +30,42 @@ public class OrchestratorService {
     private final ModelGateway modelGateway;
     private final HybridRagService rag;
     private final ToolExecutor tools;
+    private final ToolApprovalService approvals;
     private final PlannerGateway plannerGateway;
     private final PlanValidator planValidator;
     private final ContextPacker contextPacker;
     private final boolean replanEnabled;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final int toolBudget;
+    private final ThreadPoolExecutor executor;
+    private final AiTurnTelemetry telemetry;
+    private final TurnStore turns;
+    private final Map<String, ActiveTurn> activeTurns = new ConcurrentHashMap<>();
 
     public OrchestratorService(JdbcTemplate jdbc, ObjectMapper mapper, ModelGateway modelGateway,
-                               HybridRagService rag, ToolExecutor tools,
+                               HybridRagService rag, ToolExecutor tools, ToolApprovalService approvals,
                                PlannerGateway plannerGateway, PlanValidator planValidator,
-                               ContextPacker contextPacker,
-                               @Value("${geek.llm.replan-enabled:true}") boolean replanEnabled) {
+                               ContextPacker contextPacker, AiTurnTelemetry telemetry, TurnStore turns,
+                               @Value("${geek.llm.replan-enabled:true}") boolean replanEnabled,
+                               @Value("${geek.llm.planner-max-tool-steps:5}") int toolBudget,
+                               @Value("${geek.llm.stream-workers:8}") int streamWorkers,
+                               @Value("${geek.llm.stream-queue:16}") int streamQueue) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.modelGateway = modelGateway;
         this.rag = rag;
         this.tools = tools;
+        this.approvals = approvals;
         this.plannerGateway = plannerGateway;
         this.planValidator = planValidator;
         this.contextPacker = contextPacker;
         this.replanEnabled = replanEnabled;
+        this.toolBudget = Math.max(1, Math.min(8, toolBudget));
+        this.telemetry = telemetry;
+        this.turns = turns;
+        int workers = Math.max(1, Math.min(32, streamWorkers));
+        this.executor = new ThreadPoolExecutor(workers, workers, 30, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(Math.max(1, Math.min(128, streamQueue))),
+                Thread.ofPlatform().name("ai-stream-", 0).factory(), new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Transactional
@@ -80,93 +101,155 @@ public class OrchestratorService {
 
     public SseEmitter streamMessage(String conversationNo, String message, String sceneHint,
                                     AuthPrincipal user, String authorization) {
+        return streamMessage(conversationNo, message, sceneHint, user, authorization, null);
+    }
+
+    public SseEmitter streamMessage(String conversationNo, String message, String sceneHint,
+                                    AuthPrincipal user, String authorization, String requestId) {
+        if (message.length() > 2000) throw new BusinessException("AI40014", "消息超过长度限制");
         Map<String, Object> conv = loadConversation(conversationNo);
         if (((Number) conv.get("user_id")).longValue() != user.userId()) {
             throw new BusinessException("AI40302", "无权访问该会话");
         }
         SseEmitter emitter = new SseEmitter(120_000L);
-        executor.execute(() -> {
+        var accepted = turns.accept(conv, user.userId(), requestId, message, sceneHint);
+        String turnId = String.valueOf(accepted.get("id"));
+        var active = new ActiveTurn(conversationNo, user.userId(), new TurnCancellation(), emitter,
+                new java.util.concurrent.atomic.AtomicLong());
+        if (activeTurns.putIfAbsent(turnId, active) != null) {
             try {
-                TurnResult turn = processTurn(conv, message, sceneHint, user, authorization, events -> {
-                    for (Map<String, Object> e : events) {
-                        try {
-                            send(emitter, String.valueOf(e.get("event")), e.get("data"));
-                        } catch (IOException io) {
-                            throw new IllegalStateException(io);
-                        }
-                    }
-                });
-                send(emitter, "message.complete", turn.completePayload());
+                send(emitter,"turn.running",Map.of("turnId",turnId,"status","RUNNING"));
                 emitter.complete();
-            } catch (Exception ex) {
+                return emitter;
+            } catch(IOException error) { throw new BusinessException("AI50314","无法开启 AI 响应流"); }
+        }
+        Runnable cleanup = () -> {
+            if (activeTurns.remove(turnId, active)) active.cancellation().cancel();
+            executor.purge();
+        };
+        emitter.onTimeout(cleanup);
+        emitter.onCompletion(cleanup);
+        emitter.onError(error -> cleanup.run());
+        try {
+            send(emitter, "turn.accepted", Map.of("turnId", turnId));
+            long queuedAt = System.nanoTime();
+            active.cancellation().attach(executor.submit(() -> {
+                telemetry.duration("queue.wait",System.nanoTime()-queuedAt);
                 try {
-                    send(emitter, "error", Map.of("message", ex.getMessage() == null ? "AI 处理失败" : ex.getMessage()));
-                } catch (Exception ignored) {
+                    Map<String,Object> result = turns.execute(accepted, () -> telemetry.stage("turn", () -> processTurn(turns.snapshot(conv), message, sceneHint, user, authorization, events -> {
+                        active.cancellation().check();
+                        for (Map<String, Object> e : events) {
+                            try {
+                                send(emitter, String.valueOf(e.get("event")), e.get("data"));
+                            } catch (IOException io) {
+                                throw new CancellationException();
+                            }
+                        }
+                    }, active.cancellation()).completePayload()));
+                    String terminal="CANCELLED".equals(result.get("status")) ? "turn.cancelled"
+                            : "RUNNING".equals(result.get("status")) ? "turn.running" : "message.complete";
+                    send(emitter,terminal,result);
+                    emitter.complete();
+                } catch (CancellationException e) {
+                    telemetry.count("cancelled");
+                    emitter.complete();
+                } catch (Exception ex) {
+                    try {
+                        send(emitter, "error", Map.of("message", "AI 处理失败，请稍后重试"));
+                    } catch (Exception ignored) {
+                    }
+                    emitter.complete();
+                } finally {
+                    activeTurns.remove(turnId, active);
+                    if(active.cancelRequested().get()!=0) telemetry.duration("cancel.effective",System.nanoTime()-active.cancelRequested().get());
                 }
-                emitter.completeWithError(ex);
-            }
-        });
+            }));
+        } catch (RejectedExecutionException e) {
+            activeTurns.remove(turnId, active);
+            telemetry.count("rejected");
+            throw new BusinessException("AI50314", "AI 请求繁忙，请稍后重试");
+        } catch (IOException e) {
+            cleanup.run();
+            throw new BusinessException("AI50314", "无法开启 AI 响应流");
+        }
         return emitter;
     }
 
-    @Transactional
+    Map<String,Object> cancelTurn(String conversationNo, String turnId, long userId) {
+        var active = activeTurns.get(turnId);
+        if (active == null) {
+            return turns.abandon(conversationNo,turnId,userId);
+        }
+        if (active.userId() != userId || !active.conversationNo().equals(conversationNo)) {
+            throw new BusinessException("AI40302", "无权取消该请求");
+        }
+        if (!activeTurns.remove(turnId, active)) return Map.of("status","CANCEL_REQUESTED");
+        active.cancelRequested().compareAndSet(0,System.nanoTime());
+        active.cancellation().cancel();
+        try {
+            turns.abandon(conversationNo,turnId,userId);
+        } catch (BusinessException busy) {
+            if (!"AI40904".equals(busy.code())) throw busy;
+        }
+        active.emitter().complete();
+        executor.purge();
+        telemetry.count("cancel.requested");
+        return Map.of("status","CANCEL_REQUESTED");
+    }
+
+    @PreDestroy
+    void stopStreams() {
+        activeTurns.values().forEach(turn -> turn.cancellation().cancel());
+        executor.shutdownNow();
+    }
+
+    private record ActiveTurn(String conversationNo, long userId, TurnCancellation cancellation, SseEmitter emitter,
+                              java.util.concurrent.atomic.AtomicLong cancelRequested) {}
+
     public Map<String, Object> postMessage(String conversationNo, String message, String sceneHint,
                                            AuthPrincipal user, String authorization) {
-        Map<String, Object> conv = loadConversation(conversationNo);
-        if (((Number) conv.get("user_id")).longValue() != user.userId()) {
-            throw new BusinessException("AI40302", "无权访问该会话");
-        }
-        List<Map<String, Object>> events = new ArrayList<>();
-        TurnResult turn = processTurn(conv, message, sceneHint, user, authorization, events::addAll);
-        Map<String, Object> data = turn.completePayload();
-        data.put("events", events);
-        return data;
+        return postMessage(conversationNo,message,sceneHint,user,authorization,null);
     }
 
-    @Transactional
-    public Map<String, Object> confirmTool(String confirmationToken, AuthPrincipal user) {
-        var rows = jdbc.queryForList("SELECT * FROM ai_confirmation WHERE confirmation_token=? FOR UPDATE", confirmationToken);
-        if (rows.isEmpty()) throw new BusinessException("AI40402", "确认令牌不存在");
-        Map<String, Object> c = rows.getFirst();
-        if (((Number) c.get("user_id")).longValue() != user.userId()) {
-            throw new BusinessException("AI40303", "确认令牌不属于当前用户");
-        }
-        if (!"PENDING".equals(String.valueOf(c.get("status")))) {
-            throw new BusinessException("AI40901", "确认令牌已使用或失效");
-        }
-        if (((Timestamp) c.get("expires_at")).toInstant().isBefore(Instant.now())) {
-            jdbc.update("UPDATE ai_confirmation SET status='EXPIRED' WHERE id=?", c.get("id"));
-            throw new BusinessException("AI40902", "确认令牌已过期");
-        }
-        jdbc.update("UPDATE ai_confirmation SET status='CONFIRMED' WHERE id=?", c.get("id"));
-        jdbc.update("UPDATE ai_tool_call SET status='CONFIRMED' WHERE id=?", c.get("tool_call_id"));
-        return Map.of("confirmationToken", confirmationToken, "status", "CONFIRMED",
-                "message", "已记录用户确认。正式支付/退款/提交订单仍须在业务页面完成，AI 不会代为执行。");
+    public Map<String, Object> postMessage(String conversationNo, String message, String sceneHint,
+                                           AuthPrincipal user, String authorization, String requestId) {
+        Map<String,Object> conv=loadConversation(conversationNo);
+        if (((Number)conv.get("user_id")).longValue()!=user.userId()) throw new BusinessException("AI40302", "无权访问该会话");
+        var accepted=turns.accept(conv,user.userId(),requestId,message,sceneHint);
+        return turns.execute(accepted, () -> {
+            List<Map<String,Object>> events=new ArrayList<>();
+            var result=telemetry.stage("turn", () -> processTurn(turns.snapshot(conv),message,sceneHint,user,authorization,events::addAll)).completePayload();
+            result.put("events",events);
+            return result;
+        });
     }
 
-    @Transactional
+    public Map<String, Object> confirmTool(String confirmationToken, AuthPrincipal user, String authorization) {
+        return approvals.confirm(confirmationToken, user.userId(), authorization);
+    }
+
     public Map<String, Object> cancelTool(String confirmationToken, AuthPrincipal user) {
-        var rows = jdbc.queryForList("SELECT * FROM ai_confirmation WHERE confirmation_token=? FOR UPDATE", confirmationToken);
-        if (rows.isEmpty()) throw new BusinessException("AI40402", "确认令牌不存在");
-        Map<String, Object> c = rows.getFirst();
-        if (((Number) c.get("user_id")).longValue() != user.userId()) {
-            throw new BusinessException("AI40303", "确认令牌不属于当前用户");
-        }
-        jdbc.update("UPDATE ai_confirmation SET status='CANCELLED' WHERE id=?", c.get("id"));
-        jdbc.update("UPDATE ai_tool_call SET status='CANCELLED' WHERE id=?", c.get("tool_call_id"));
-        return Map.of("confirmationToken", confirmationToken, "status", "CANCELLED");
+        return approvals.cancel(confirmationToken, user.userId());
     }
 
-    @Transactional
+    public Map<String, Object> toolApprovalStatus(String confirmationToken, AuthPrincipal user) {
+        return approvals.status(confirmationToken, user.userId());
+    }
+
     public TurnResult processTurn(Map<String, Object> conv, String message, String sceneHint,
                                   AuthPrincipal user, String authorization, EventSink sink) {
+        return processTurn(conv, message, sceneHint, user, authorization, sink, null);
+    }
+
+    private TurnResult processTurn(Map<String, Object> conv, String message, String sceneHint, AuthPrincipal user,
+                                   String authorization, EventSink sink, TurnCancellation cancellation) {
         long convId = ((Number) conv.get("id")).longValue();
         Instant now = Instant.now();
         Map<String, Object> contextRoot = parseContextMap(conv.get("context_json"));
         Map<String, Object> memorySlots = ConversationSlots.fromContext(contextRoot);
 
-        long userMsgId = DistributedId.next();
-        jdbc.update("INSERT INTO ai_message(id,conversation_id,role,content,token_count,token_estimated,created_at) VALUES(?,?,?,?,?,?,?)",
+        long userMsgId = turns.userMessageId();
+        jdbc.update("INSERT INTO ai_message(id,conversation_id,role,content,token_count,token_estimated,created_at) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id",
                 userMsgId, convId, "USER", message, Math.max(1, message.length() / 2), true, Timestamp.from(now));
 
         ContextPacker.PackedContext packed = contextPacker.pack(convId, userMsgId, message, sceneHint, memorySlots);
@@ -178,7 +261,16 @@ public class OrchestratorService {
         Map<String, Object> plannerMeta = new LinkedHashMap<>();
         Map<String, Object> turnSlots = new LinkedHashMap<>(memorySlots);
 
-        var llmPlan = plannerGateway.plan(message, sceneHint, convId, packed);
+        Map<String,Object> checkpoint=turns.plan();
+        if (checkpoint!=null) {
+            agent=String.valueOf(checkpoint.get("agent"));
+            planned=mapper.convertValue(checkpoint.get("planned"),new com.fasterxml.jackson.core.type.TypeReference<List<PlanEnvelope.PlannedTool>>(){});
+            turnSlots=new LinkedHashMap<>(turns.parse(json(checkpoint.get("slots"))));
+            plannerMode=String.valueOf(checkpoint.get("mode"));
+            fallbackReason=(String)checkpoint.get("fallback");
+            plannerMeta.putAll(turns.parse(json(checkpoint.get("meta"))));
+        } else {
+        var llmPlan = telemetry.stage("planner", () -> plannerGateway.plan(message, sceneHint, convId, packed));
         if (llmPlan.isPresent()) {
             PlanEnvelope validated = planValidator.validate(llmPlan.get(), message, memorySlots);
             agent = validated.agent();
@@ -212,10 +304,15 @@ public class OrchestratorService {
             ))));
         }
 
+            Map<String,Object> saved=new LinkedHashMap<>();
+            saved.put("agent",agent); saved.put("planned",planned); saved.put("slots",turnSlots);
+            saved.put("mode",plannerMode); saved.put("fallback",fallbackReason); saved.put("meta",plannerMeta);
+            turns.savePlan(saved);
+        }
+
         List<Map<String, Object>> toolResults = new ArrayList<>();
         List<Map<String, Object>> citations = new ArrayList<>();
         List<Map<String, Object>> confirmations = new ArrayList<>();
-        boolean degraded = false;
         Map<String, Object> replanMeta = null;
 
         sink.emit(List.of(event("message.start", Map.of(
@@ -225,7 +322,7 @@ public class OrchestratorService {
         ))));
 
         executePlannedTools(planned, toolResults, citations, confirmations, sink,
-                convId, userMsgId, now, user, authorization, turnSlots, message);
+                convId, userMsgId, now, user, authorization, turnSlots, message, agent);
 
         if (replanEnabled) {
             var replanOpt = EmptySearchReplanner.maybeReplan(planned, toolResults, turnSlots, message);
@@ -234,11 +331,12 @@ public class OrchestratorService {
                 replanMeta = new LinkedHashMap<>(replan.meta());
                 sink.emit(List.of(event("plan.replan", replanMeta)));
                 executePlannedTools(replan.tools(), toolResults, citations, confirmations, sink,
-                        convId, userMsgId, now, user, authorization, turnSlots, message);
+                        convId, userMsgId, now, user, authorization, turnSlots, message, agent);
             }
         }
 
         ConversationSlots.applyToolResults(turnSlots, toolResults);
+        turns.checkOwnership();
         contextRoot.put(ConversationSlots.KEY_SLOTS, turnSlots);
         jdbc.update("UPDATE ai_conversation SET context_json=?, updated_at=CURRENT_TIMESTAMP, scene=? WHERE id=?",
                 json(contextRoot), agent, convId);
@@ -248,7 +346,8 @@ public class OrchestratorService {
                 || containsAny(message, "参数", "保修", "规格", "说明书"));
         boolean noEvidence = false;
         if (wantRag) {
-            List<HybridRagService.Citation> retrieved = rag.retrieve(message, 3);
+            String scope = "AFTERSALE".equals(agent) ? "RULE" : "PRODUCT";
+            List<HybridRagService.Citation> retrieved = telemetry.stage("rag", () -> rag.retrieve(message, 3, scope));
             if (retrieved.isEmpty()) {
                 noEvidence = true;
                 sink.emit(List.of(event("citation", Map.of("status", "NO_EVIDENCE", "message", "未检索到足够证据"))));
@@ -272,34 +371,48 @@ public class OrchestratorService {
                 语气可润色，事实必须 grounded。
                 """;
         String answerUser = "用户原话：" + message + "\n\n工具结果摘要草稿：\n" + draft;
-        ModelGateway.CompletionResult completion = modelGateway.completeAnswer(answerSystem, answerUser, convId);
-        degraded = completion.degraded();
-        AnswerGrounding.Result grounded = AnswerGrounding.ground(completion.text(), draft, toolResults);
+        boolean evidenceMissing = noEvidence;
+        var answerOutput = new AnswerStreamGuard(answerSystem, draft, toolResults, delta -> {
+            if (cancellation != null && !evidenceMissing) {
+                sink.emit(List.of(event("message.delta", Map.of("delta", delta))));
+            }
+        });
+        ModelGateway.CompletionResult completion = telemetry.stage("answer", () -> {
+            if (cancellation == null) return modelGateway.completeAnswer(answerSystem, answerUser, convId, answerOutput);
+            return modelGateway.streamAnswer(answerSystem, answerUser, convId, answerOutput, cancellation);
+        });
+        boolean degraded = completion.degraded();
+        AnswerGrounding.Result grounded = AnswerGrounding.ground(degraded || noEvidence ? null : completion.text(), draft, toolResults);
         String finalText = grounded.text();
         if (grounded.usedDraft() && degraded) {
             finalText = finalText + (finalText.contains("模型已降级") ? "" : "\n\n（模型已降级）");
         }
 
-        // stream deltas
-        for (String part : chunk(finalText, 40)) {
-            sink.emit(List.of(event("message.delta", Map.of("delta", part))));
-        }
+        if (cancellation != null) cancellation.check();
 
-        long assistantMsgId = DistributedId.next();
+        turns.checkOwnership();
+        long assistantMsgId = turns.assistantMessageId();
         jdbc.update("""
                 INSERT INTO ai_message(id,conversation_id,role,content,token_count,token_estimated,model_name,agent_code,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id
                 """, assistantMsgId, convId, "ASSISTANT", finalText, completion.completionTokens(),
                 completion.tokenUsageEstimated(), completion.modelName(), agent, Timestamp.from(Instant.now()));
+        finalText = jdbc.queryForObject("SELECT content FROM ai_message WHERE id=?",String.class,assistantMsgId);
 
         for (Map<String, Object> c : citations) {
             jdbc.update("""
                     INSERT INTO knowledge_citation(id,message_id,document_id,chunk_id,score)
-                    VALUES(?,?,?,?,?)
+                    SELECT ?,?,?,?,? WHERE NOT EXISTS (
+                      SELECT 1 FROM knowledge_citation WHERE message_id=? AND document_id=? AND chunk_id=?)
                     """, DistributedId.next(), assistantMsgId,
                     ((Number) c.get("documentId")).longValue(),
                     ((Number) c.get("chunkId")).longValue(),
-                    c.get("score"));
+                    c.get("score"),assistantMsgId,c.get("documentId"),c.get("chunkId"));
+        }
+
+        if (cancellation != null && (evidenceMissing || !finalText.equals(answerOutput.text()))) {
+            sink.emit(List.of(event("message.reset", Map.of("content", finalText, "degraded", degraded,
+                    "reason", grounded.usedDraft() ? "GROUNDED_FALLBACK" : "ANSWER_FINALIZED"))));
         }
 
         return new TurnResult(assistantMsgId, agent, finalText, completion, toolResults, citations, confirmations,
@@ -313,13 +426,33 @@ public class OrchestratorService {
                                      EventSink sink,
                                      long convId, long userMsgId, Instant now,
                                      AuthPrincipal user, String authorization,
-                                     Map<String, Object> turnSlots, String message) {
+                                     Map<String, Object> turnSlots, String message, String agent) {
         for (PlanEnvelope.PlannedTool plan : planned) {
+            if (toolResults.size() + confirmations.size() >= toolBudget) break;
             RiskLevel risk = ToolPolicy.riskOf(plan.name());
-            long toolId = DistributedId.next();
+            var step = turns.nextStep();
+            long toolId = step.toolId();
+            if (step.result() != null) {
+                var stored = step.result();
+                if (stored.containsKey("confirmationToken")) {
+                    confirmations.add(stored);
+                    sink.emit(List.of(event("confirmation.required", stored)));
+                } else {
+                    toolResults.add(stored);
+                    sink.emit(List.of(event("tool.result", stored)));
+                    if (stored.get("result") instanceof Map<?, ?> result && result.get("citations") instanceof List<?> list) {
+                        for (Object item : list) {
+                            @SuppressWarnings("unchecked") var citation = (Map<String, Object>) item;
+                            citations.add(citation);
+                            sink.emit(List.of(event("citation", citation)));
+                        }
+                    }
+                }
+                continue;
+            }
             jdbc.update("""
                     INSERT INTO ai_tool_call(id,conversation_id,message_id,tool_name,arguments_json,status,risk_level,created_at)
-                    VALUES(?,?,?,?,?,'PENDING',?,?)
+                    VALUES(?,?,?,?,?,'PENDING',?,?) ON DUPLICATE KEY UPDATE id=id
                     """, toolId, convId, userMsgId, plan.name(), json(plan.args()), risk.name(), Timestamp.from(now));
 
             sink.emit(List.of(event("tool.call", Map.of("toolCallId", toolId, "toolName", plan.name(),
@@ -330,34 +463,45 @@ public class OrchestratorService {
                         "FORBIDDEN", toolId);
                 Map<String, Object> denied = Map.of("toolName", plan.name(), "status", "DENIED",
                         "reason", "AI 不得直接支付、提交订单或正式退款");
+                turns.finish(step, denied);
                 toolResults.add(denied);
                 sink.emit(List.of(event("tool.result", denied)));
                 continue;
             }
 
-            if (risk.requiresConfirmation()) {
-                String token = "CFT" + DistributedId.next();
-                jdbc.update("""
-                        INSERT INTO ai_confirmation(id,tool_call_id,confirmation_token,user_id,expires_at,status,created_at)
-                        VALUES(?,?,?,?,?,'PENDING',?)
-                        """, DistributedId.next(), toolId, token, user.userId(),
-                        Timestamp.from(now.plusSeconds(600)), Timestamp.from(now));
-                jdbc.update("UPDATE ai_tool_call SET status='AWAITING_CONFIRMATION', result_summary=? WHERE id=?",
-                        "awaiting user confirmation", toolId);
-                Map<String, Object> conf = Map.of(
-                        "toolCallId", toolId,
-                        "toolName", plan.name(),
-                        "confirmationToken", token,
-                        "riskLevel", risk.name(),
-                        "message", "该操作需要用户确认，AI 不会直接执行");
-                confirmations.add(conf);
-                sink.emit(List.of(event("confirmation.required", conf)));
-                continue;
-            }
-
             try {
-                Map<String, Object> resolvedArgs = enrichToolArgs(plan, toolResults, turnSlots, message);
-                Map<String, Object> result = tools.execute(plan.name(), resolvedArgs, user.userId(), authorization);
+                if ("invalid-arguments".equals(plan.reason())) {
+                    throw new BusinessException("AI40014", "工具参数不符合 Schema");
+                }
+                ToolPolicy.validatePlan(plan.name(), plan.args());
+                if ("query_operation_metrics".equals(plan.name())
+                        && Collections.disjoint(user.roles(), Set.of("SYSTEM_ADMIN", "OPS", "PRODUCT_ADMIN"))) {
+                    throw new BusinessException("AI40305", "当前角色无权查询运营指标");
+                }
+                Map<String, Object> resolvedArgs = step.arguments() == null
+                        ? enrichToolArgs(plan, toolResults, turnSlots, message) : step.arguments();
+                turns.prepare(step, resolvedArgs);
+                jdbc.update("UPDATE ai_tool_call SET arguments_json=? WHERE id=?", json(resolvedArgs), toolId);
+                if (risk.requiresConfirmation()) {
+                    ToolPolicy.authorize(plan.name(), resolvedArgs, user.userId(), true);
+                    String token = approvals.request(toolId, user.userId());
+                    Map<String, Object> conf = Map.of(
+                            "toolCallId", toolId,
+                            "toolName", plan.name(),
+                            "confirmationToken", token,
+                            "riskLevel", risk.name(),
+                            "arguments", resolvedArgs,
+                            "message", "确认后生成草稿");
+                    turns.finish(step, conf);
+                    confirmations.add(conf);
+                    sink.emit(List.of(event("confirmation.required", conf)));
+                    continue;
+                }
+
+                String knowledgeScope = "AFTERSALE".equals(agent) ? "RULE" : "PRODUCT";
+                turns.checkOwnership();
+                Map<String, Object> result = telemetry.stage("tool", () -> tools.execute(
+                        plan.name(), resolvedArgs, user.userId(), authorization, knowledgeScope, step.key()));
                 String summary = truncate(json(result), 1800);
                 jdbc.update("UPDATE ai_tool_call SET status='SUCCESS', result_summary=? WHERE id=?", summary, toolId);
                 Map<String, Object> tr = new LinkedHashMap<>();
@@ -366,6 +510,7 @@ public class OrchestratorService {
                 tr.put("status", "SUCCESS");
                 tr.put("arguments", resolvedArgs);
                 tr.put("result", result);
+                turns.finish(step, tr);
                 toolResults.add(tr);
                 sink.emit(List.of(event("tool.result", tr)));
                 if (result.get("citations") instanceof List<?> list) {
@@ -379,9 +524,11 @@ public class OrchestratorService {
                     }
                 }
             } catch (BusinessException ex) {
+                if ("add_cart_item".equals(plan.name()) && ex.code().startsWith("AI503")) throw ex;
                 jdbc.update("UPDATE ai_tool_call SET status='DENIED', result_summary=? WHERE id=?", ex.getMessage(), toolId);
                 Map<String, Object> denied = Map.of("toolCallId", toolId, "toolName", plan.name(),
                         "status", "DENIED", "reason", ex.getMessage());
+                turns.finish(step, denied);
                 toolResults.add(denied);
                 sink.emit(List.of(event("tool.result", denied)));
             }
@@ -933,14 +1080,6 @@ public class OrchestratorService {
 
     private Map<String, Object> event(String name, Object data) {
         return Map.of("event", name, "data", data);
-    }
-
-    private List<String> chunk(String text, int size) {
-        List<String> parts = new ArrayList<>();
-        for (int i = 0; i < text.length(); i += size) {
-            parts.add(text.substring(i, Math.min(text.length(), i + size)));
-        }
-        return parts;
     }
 
     private String json(Object v) {

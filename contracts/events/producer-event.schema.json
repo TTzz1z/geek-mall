@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GeekMallDomainEvent",
+  "type": "object",
+  "required": [
+    "eventId",
+    "eventType",
+    "aggregateId",
+    "payload",
+    "occurredAt",
+    "producer",
+    "version"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "minLength": 8
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "product.spu.on-sale.v1",
+        "product.spu.off-sale.v1",
+        "trade.order.created.v1",
+        "trade.order.cancelled.v1",
+        "payment.payment.succeeded.v1",
+        "inventory.stock.reserved.v1",
+        "inventory.stock.released.v1",
+        "inventory.fulfillment.status-changed.v1",
+        "marketing.seckill.order.v1",
+        "inventory.stock.deducted.v1",
+        "aftersale.refund.completed.v1"
+      ]
+    },
+    "aggregateType": {
+      "type": "string"
+    },
+    "aggregateId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object"
+    },
+    "occurredAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "const": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "product.spu.on-sale.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "id",
+              "title",
+              "saleStatus"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "saleStatus": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "product.spu.off-sale.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "id",
+              "title",
+              "saleStatus"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "saleStatus": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "trade.order.created.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "orderId",
+              "orderNo",
+              "payableAmount"
+            ],
+            "properties": {
+              "orderId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "orderNo": {
+                "type": "string",
+                "minLength": 1
+              },
+              "payableAmount": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "trade.order.cancelled.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "orderNo",
+              "reason"
+            ],
+            "properties": {
+              "orderNo": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "payment.payment.succeeded.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "orderNo",
+              "paymentNo",
+              "amount",
+              "channel"
+            ],
+            "properties": {
+              "orderNo": {
+                "type": "string",
+                "minLength": 1
+              },
+              "paymentNo": {
+                "type": "string",
+                "minLength": 1
+              },
+              "amount": {
+                "type": "number",
+                "minimum": 0
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "inventory.stock.reserved.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "orderNo",
+              "reservationNo"
+            ],
+            "properties": {
+              "orderNo": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reservationNo": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "inventory.stock.released.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "orderNo"
+            ],
+            "properties": {
+              "orderNo": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "inventory.fulfillment.status-changed.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "orderNo",
+              "status"
+            ],
+            "properties": {
+              "orderNo": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "enum": [
+                  "SHIPPED",
+                  "COMPLETED"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "marketing.seckill.order.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "seckillOrderId",
+              "sessionId",
+              "skuId",
+              "userId",
+              "quantity",
+              "requestId",
+              "price",
+              "addressId",
+              "expiresAt"
+            ],
+            "properties": {
+              "seckillOrderId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "sessionId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "skuId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "userId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "requestId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "price": {
+                "type": "number",
+                "minimum": 0
+              },
+              "addressId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "expiresAt": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "inventory.stock.deducted.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "aftersale.refund.completed.v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": []
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

@@ -7,6 +7,10 @@ spring:
     password: ${MYSQL_PASSWORD:CHANGE_ME_MYSQL_PASSWORD}
   flyway.locations: classpath:db/migration
   rabbitmq:
+    publisher-returns: true
+    template.mandatory: true
+    connection-timeout: 3s
+    publisher-confirm-type: correlated
     host: ${RABBITMQ_HOST:localhost}
     username: ${RABBITMQ_USER:geek}
     password: ${RABBITMQ_PASSWORD:CHANGE_ME_RABBITMQ_PASSWORD}
@@ -14,6 +18,4 @@ spring:
 geek:
   auth.jwt-secret: ${JWT_SECRET:CHANGE_ME_JWT_SECRET_AT_LEAST_32_BYTES}
   internal-key: ${INTERNAL_SERVICE_KEY:CHANGE_ME_INTERNAL_SERVICE_KEY}
-  redis.host: ${REDIS_HOST:localhost}
-  redis.port: ${REDIS_PORT:6379}
 management.endpoints.web.exposure.include: health,info,prometheus

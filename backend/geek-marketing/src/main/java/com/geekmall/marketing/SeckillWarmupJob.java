@@ -1,11 +1,14 @@
 package com.geekmall.marketing;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
 class SeckillWarmupJob {
+    private static final Logger log = LoggerFactory.getLogger(SeckillWarmupJob.class);
     private final JdbcTemplate jdbc;
     private final SeckillInventoryService seckillInventory;
 
@@ -26,17 +29,21 @@ class SeckillWarmupJob {
     }
 
     /**
-     * Only release QUEUED (Lua held, trade order not created yet).
+     * Expire QUEUED reservations while Trade has yet to confirm the order.
      * CREATED stock is released exclusively by Trade cancel / payment timeout.
      */
     @Scheduled(fixedDelayString = "${geek.seckill.timeout-interval:5000}")
     void releaseExpired() {
-        for (var row : jdbc.queryForList(
-                "SELECT session_id AS sessionId,sku_id AS skuId,user_id AS userId,quantity FROM marketing_seckill_order WHERE status='QUEUED' AND expires_at IS NOT NULL AND expires_at<=CURRENT_TIMESTAMP LIMIT 50")) {
+        for (var row : jdbc.queryForList("""
+                SELECT id,session_id,sku_id FROM marketing_seckill_order
+                WHERE status='QUEUED' AND expires_at<=CURRENT_TIMESTAMP(3) ORDER BY expires_at,id LIMIT 50
+                """)) {
+            long orderId = ((Number) row.get("id")).longValue();
             try {
-                seckillInventory.release(((Number) row.get("sessionId")).longValue(), ((Number) row.get("skuId")).longValue(),
-                        ((Number) row.get("userId")).longValue(), ((Number) row.get("quantity")).intValue());
-            } catch (Exception ignored) {
+                seckillInventory.releaseExpired(((Number) row.get("session_id")).longValue(),
+                        ((Number) row.get("sku_id")).longValue(), orderId);
+            } catch (RuntimeException e) {
+                log.warn("Failed to release expired seckill reservation orderId={}", orderId, e);
             }
         }
     }

@@ -64,7 +64,7 @@ Geek Mall 采用前端多应用、Gateway 和业务域微服务结构。Docker �
 - `contracts/events/samples/*.json`；
 - `contracts/http/checkout-preview.request.json`。
 
-契约目录只覆盖少量关键样例，不是完整 OpenAPI。事件发布/消费需要同时维持事件 ID 幂等和 schema 兼容。
+V1 消费者兼容 schema 保持历史约束；`producer-event.schema.json` 为当前生产者提供更严格的字段校验。库存扣减和售后退款完成事件为保留类型，当前未找到对应生产者。契约样例不是完整 OpenAPI；应同时验证实际生产者、消费者、事件 ID 幂等与 schema 兼容。
 
 ## 部署与配置
 
@@ -105,10 +105,10 @@ docker compose up -d --build
 
 | 层 | 命令/入口 | 说明 |
 |---|---|---|
-| 后端 | `cd backend; mvn -B -ntp verify` | 单元/集成测试和 Flyway 启动校验 |
+| 后端 | `mvn -B -ntp -f backend/pom.xml -Pintegration verify` | 单元测试与基于 Docker 的 MySQL 8.4、RabbitMQ、Agent 集成测试 |
 | 前端 | `cd frontend; pnpm typecheck; pnpm test; pnpm build` | 类型、Vitest 和构建 |
 | Compose | `docker compose -f docker-compose.yml config --quiet` | 配置展开校验 |
-| 契约 | `scripts/contract-check.ps1` | 事件 schema 与样例 |
+| 契约 | `python scripts/event-contract-check.py` | 安装 jsonschema 后验证历史和生产者 schema、样例及缺字段反例；`scripts/contract-check.ps1` 另验证运行中服务 |
 | API 主链 | `scripts/e2e-core-flow.ps1` | 交易、支付、商家隔离、售后和 AI 最小断言 |
 | 并发专项 | `scripts/concurrency-verify.ps1` | 幂等下单及精确 Maven 并发/回调测试 |
 | Playwright API | `cd e2e; pnpm test:api` | 不启动浏览器的 API smoke |
@@ -116,6 +116,18 @@ docker compose up -d --build
 | CI | `.github/workflows/ci.yml` | 后端、前端、Compose、契约和 Trivy |
 
 默认 Compose 下应先设置 `$env:E2E_BASE_URL='http://127.0.0.1:8088'`，让 API 验收通过商城 nginx 代理。报告和构建目录均被 Git 忽略，清理后可由命令重新生成。详细断言见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)。
+
+### AI 知识库与评测
+
+上传接口接收 `minio://<MINIO_BUCKET>/<object-key>`。PDF、DOCX、XLSX、PNG、JPEG 和 TIFF 由 Tika 4.2.0 读取和识别，提取到有效正文后写入 `READY`。索引任务独立重试。旧版占位解析记录会被标记为 `REPARSE_REQUIRED`，可用相同来源标识重新入库。商品同步只写商品知识，价格和库存由业务接口提供。商品和平台规则查询分别读取公开的 `PRODUCT` 与 `RULE` 知识库。
+
+配置 `EMBEDDING_URL` 为 OpenAI 兼容接口根路径，例如 `http://embedding:8000/v1`。端点须返回 1024 维向量。未配置时使用 Elasticsearch BM25。对比模型时，分别使用 `Qwen/Qwen3-Embedding-0.6B` 和 `BAAI/bge-m3`，为每个模型设置不同的 `KNOWLEDGE_INDEX`，等待索引任务完成后，以管理员令牌调用 `POST /api/v1/admin/ai/knowledge/evaluate?k=5`。响应包含 Recall@K、MRR 和 nDCG。
+
+本轮使用 Elasticsearch 8.17.3 和真实 Ollama 模型，对 62 条合成标注问题执行 DEV/TEST 划分评测：Qwen3 为 Q8_0，BGE-M3 为 F16。基线相关问题的源级 Recall/MRR/nDCG 均为 1，但无答案候选误召回为 83.3%。仅用 DEV 校准 BGE-M3 0.62 准入阈值后，冻结 TEST 的三项检索指标为 0.889、无答案误召回为 33.3%，仍未通过暂定 20% 门槛。数据仅覆盖 3 来源、6 分块且尚无独立人工专家复核，不代表泛化表现。报告、部署配置和失败结果见 [检索评测说明](backend/geek-ai/src/main/resources/eval/retrieval-v2.md)。
+
+独立红队用例位于 `e2e/ai-redteam`。设置隔离环境的 `AI_REDTEAM_URL` 和普通用户的 `AI_REDTEAM_TOKEN`，运行 `npx --yes promptfoo@0.125.1 eval --config e2e/ai-redteam/promptfooconfig.yaml --no-cache`。
+
+Trivy 在安装当前版本之前扫描基准，并在每次安装前清除 CI runner 的项目 SNAPSHOT 缓存，使用同一份漏洞库扫描当前版本和基准提交。PR 以目标分支提交为基准，推送以前一个提交为基准，首次推送或手动触发使用与默认分支的 merge-base。源码依赖和实际 AI 运行镜像均阻断新增 HIGH、CRITICAL 及 HIGH 升为 CRITICAL 的发现；重复发现按最高严重级别归并。既有漏洞仍保留在报告中，门禁成功不代表零漏洞。
 
 ## 可观测性与运维
 
@@ -130,5 +142,5 @@ docker compose up -d --build
 - HTTP/事件契约只覆盖少量样例，缺少完整 OpenAPI、生成客户端和兼容性门禁。
 - Playwright 当前是 API smoke，缺少浏览器级主路径、视觉回归和移动真机自动化。
 - 微信/支付宝、发票、退款到账和仓储物流仍是模拟或骨架，不可视为生产集成。
-- AI 本地检索不是 Embedding/Milvus 实现；远程模型质量、供应商故障、数据脱敏和账单对账仍需补齐。
+- AI 支持配置 1024 维 Embedding 和 Elasticsearch 混合检索，未配置时回退 BM25；当前知识查询范围为公开 PRODUCT/RULE。远程模型质量、供应商故障、数据脱敏和账单对账仍需补齐。
 - 本地观测与备份配置尚未达到生产 SLO、审计和灾备要求。

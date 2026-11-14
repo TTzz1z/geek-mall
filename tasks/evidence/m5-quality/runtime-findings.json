@@ -1,0 +1,351 @@
+{
+  "findings": [
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-core",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.18.8, 2.21.4",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-68494",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-core-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-core",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.18.11, 2.21.7, 2.22.3",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-89407",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-core-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-core",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.21.7, 2.22.3, 2.18.11",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-89425",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-core-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-databind",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.18.8, 3.1.4, 2.21.4",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-54512",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-databind-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-databind",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.18.8, 2.21.4, 3.1.4",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-54513",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-databind-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-databind",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.18.10, 2.21.6, 2.22.2",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-68497",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-databind-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-databind",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.18.11, 2.21.7, 2.22.3",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-91776",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-databind-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.fasterxml.jackson.core:jackson-databind",
+      "InstalledVersion": "2.17.2",
+      "FixedVersion": "2.21.7, 2.18.11, 2.22.3",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-91777",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/jackson-databind-2.17.2.jar"
+    },
+    {
+      "PkgName": "com.google.guava:guava",
+      "InstalledVersion": "32.1.3-android",
+      "FixedVersion": "33.7.2",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-102554",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/nacos-client-2.4.2.jar"
+    },
+    {
+      "PkgName": "io.micrometer:micrometer-core",
+      "InstalledVersion": "1.13.6",
+      "FixedVersion": "1.16.6, 1.15.12",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-40984",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/micrometer-core-1.13.6.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.3, 10.1.35, 9.0.99",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2025-24813",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.118, 10.1.55, 11.0.22",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-41293",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.118, 10.1.55, 11.0.22",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-43512",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.118, 10.1.55, 11.0.22",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-43515",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.23, 10.1.56, 9.0.119",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-55276",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.25, 10.1.58, 9.0.121",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-65182",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.25, 10.1.58, 9.0.121",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-65905",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.25, 10.1.58, 9.0.121",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-68525",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.2, 10.1.34, 9.0.98",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2024-50379",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.2, 10.1.34, 9.0.98",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2024-56337",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.8, 10.1.42, 9.0.106",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-48988",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.10, 10.1.44, 9.0.108",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-48989",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.9, 10.1.43, 9.0.107",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-52520",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.107, 10.1.43, 11.0.9",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-53506",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.11, 10.1.45, 9.0.109",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-55752",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.18, 10.1.52, 9.0.115",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-24734",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.116, 10.1.52, 11.0.20",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-24880",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.116, 10.1.54, 11.0.21",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-34483",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.117, 10.1.54, 11.0.21",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-34487",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.118, 10.1.55, 11.0.22",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-41284",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.118, 10.1.55, 11.0.22",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-42498",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "9.0.118, 10.1.55, 11.0.22",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-43513",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.23, 10.1.56, 9.0.119",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-53404",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.apache.tomcat.embed:tomcat-embed-core",
+      "InstalledVersion": "10.1.31",
+      "FixedVersion": "11.0.5, 10.1.37, 9.0.101",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-55957",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/tomcat-embed-core-10.1.31.jar"
+    },
+    {
+      "PkgName": "org.springframework.boot:spring-boot",
+      "InstalledVersion": "3.3.5",
+      "FixedVersion": "3.3.11, 3.4.5",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-22235",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-boot-3.3.5.jar"
+    },
+    {
+      "PkgName": "org.springframework.boot:spring-boot",
+      "InstalledVersion": "3.3.5",
+      "FixedVersion": "4.0.6, 3.5.14",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-40973",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-boot-3.3.5.jar"
+    },
+    {
+      "PkgName": "org.springframework.security:spring-security-crypto",
+      "InstalledVersion": "6.3.4",
+      "FixedVersion": "6.3.8, 6.4.4, 6.2.10, 6.1.14, 6.0.16, 5.8.18, 5.7.16",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-22228",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-security-crypto-6.3.4.jar"
+    },
+    {
+      "PkgName": "org.springframework.security:spring-security-web",
+      "InstalledVersion": "6.3.4",
+      "FixedVersion": "6.5.9, 7.0.4",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-22732",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-security-web-6.3.4.jar"
+    },
+    {
+      "PkgName": "org.springframework:spring-core",
+      "InstalledVersion": "6.1.14",
+      "FixedVersion": "6.2.11",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2025-41249",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-core-6.1.14.jar"
+    },
+    {
+      "PkgName": "org.springframework:spring-expression",
+      "InstalledVersion": "6.1.14",
+      "FixedVersion": "7.0.8, 6.2.19",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-41850",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-expression-6.1.14.jar"
+    },
+    {
+      "PkgName": "org.springframework:spring-webmvc",
+      "InstalledVersion": "6.1.14",
+      "FixedVersion": "7.0.9",
+      "Severity": "CRITICAL",
+      "VulnerabilityID": "CVE-2026-47884",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-webmvc-6.1.14.jar"
+    },
+    {
+      "PkgName": "org.springframework:spring-webmvc",
+      "InstalledVersion": "6.1.14",
+      "FixedVersion": "7.0.8, 6.2.19",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-41842",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-webmvc-6.1.14.jar"
+    },
+    {
+      "PkgName": "org.springframework:spring-webmvc",
+      "InstalledVersion": "6.1.14",
+      "FixedVersion": "7.0.8, 6.2.19",
+      "Severity": "HIGH",
+      "VulnerabilityID": "CVE-2026-41845",
+      "PkgPath": "app/app.jar/BOOT-INF/lib/spring-webmvc-6.1.14.jar"
+    }
+  ],
+  "revision": "f452ddfe253a546774264c808d569d6dd289ae65",
+  "imageId": "sha256:6f7530923f9434885ca73548e763046ca5aaf428dac3711f039a6397bf8d4a71",
+  "scanner": "0.76.2"
+}

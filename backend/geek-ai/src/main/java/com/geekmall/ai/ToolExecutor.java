@@ -3,6 +3,7 @@ package com.geekmall.ai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.geekmall.common.api.BusinessException;
 import com.geekmall.common.domain.DistributedId;
+import com.geekmall.common.web.InternalRestClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -22,29 +23,34 @@ public class ToolExecutor {
     private final RestClient tradeClient;
     private final RestClient searchClient;
     private final RestClient aftersaleClient;
+    private final RestClient memberClient;
+    private final AiTurnTelemetry telemetry;
 
-    public ToolExecutor(HybridRagService rag, ObjectMapper mapper, JdbcTemplate jdbc,
+    public ToolExecutor(HybridRagService rag, ObjectMapper mapper, JdbcTemplate jdbc, AiTurnTelemetry telemetry,
                         @Value("${geek.product-service-url}") String productUrl,
                         @Value("${geek.trade-service-url}") String tradeUrl,
                         @Value("${geek.search-service-url}") String searchUrl,
-                        @Value("${geek.aftersale-service-url}") String aftersaleUrl) {
+                        @Value("${geek.aftersale-service-url}") String aftersaleUrl,
+                        @Value("${geek.member-service-url}") String memberUrl) {
         this.rag = rag;
         this.mapper = mapper;
         this.jdbc = jdbc;
-        this.productClient = RestClient.create(productUrl);
-        this.tradeClient = RestClient.create(tradeUrl);
-        this.searchClient = RestClient.create(searchUrl);
-        this.aftersaleClient = RestClient.create(aftersaleUrl);
+        this.telemetry = telemetry;
+        this.productClient = InternalRestClient.create(productUrl);
+        this.tradeClient = InternalRestClient.create(tradeUrl);
+        this.searchClient = InternalRestClient.create(searchUrl);
+        this.aftersaleClient = InternalRestClient.create(aftersaleUrl);
+        this.memberClient = InternalRestClient.create(memberUrl);
     }
 
-    public Map<String, Object> execute(String toolName, Map<String, Object> args, long userId, String userToken) {
-        RiskLevel risk = ToolPolicy.riskOf(toolName);
-        if (risk.forbidden()) {
-            throw new BusinessException("AI40301", "AI 工具无权限: " + toolName + "（禁止直接支付/提交订单/正式退款等）");
-        }
-        if (!ToolPolicy.isRegistered(toolName)) {
-            throw new BusinessException("AI40401", "未注册工具: " + toolName);
-        }
+    public Map<String, Object> execute(String toolName, Map<String, Object> args, long userId, String userToken,
+                                       String knowledgeScope) {
+        return execute(toolName,args,userId,userToken,knowledgeScope,null);
+    }
+
+    public Map<String,Object> execute(String toolName,Map<String,Object> args,long userId,String userToken,
+                                      String knowledgeScope,String stepKey) {
+        ToolPolicy.authorize(toolName, args, userId, false);
         Map<String, Object> a = args == null ? Map.of() : args;
         return switch (toolName) {
             case "search_products" -> searchProducts(a);
@@ -55,7 +61,7 @@ public class ToolExecutor {
             }
             case "compare_products" -> compareProducts(a.get("spuIds"));
             case "get_product_knowledge" -> {
-                var cites = rag.retrieve(str(a.get("query"), "参数"), 3);
+                var cites = telemetry.stage("rag", () -> rag.retrieve(str(a.get("query"), "参数"), 3, knowledgeScope));
                 yield Map.of("citations", cites.stream().map(HybridRagService.Citation::asMap).toList(),
                         "evidence", rag.buildEvidence(cites));
             }
@@ -74,18 +80,76 @@ public class ToolExecutor {
             case "add_cart_item" -> {
                 long skuId = longVal(a.get("skuId"), 0L);
                 if (skuId <= 0) throw new BusinessException("AI40003", "缺少有效 skuId");
-                yield requireUser(userId, addCartItem(userToken, skuId, intVal(a.get("quantity"), 1)));
+                yield requireUser(userId, addCartItem(userToken, skuId, intVal(a.get("quantity"), 1),stepKey));
             }
-            case "create_aftersale_draft" -> requireUser(userId, createAftersaleDraft(userId, a));
+            case "create_aftersale_draft" -> requireUser(userId, createAftersaleDraft(userId, a, stepKey));
             case "generate_product_draft" -> Map.of("status", "DRAFT", "title", "AI 生成商品草稿", "confidence", 0.72,
                     "message", "草稿需人工确认后才能提交审核");
             case "create_ticket_draft" -> requireUser(userId, saveDraft(userId, "TICKET", a,
-                    Map.of("status", "DRAFT", "title", a.getOrDefault("title", "客服工单草稿"))));
-            case "cancel_paid_order_draft", "modify_address_draft" -> requireUser(userId, Map.of(
-                    "status", "NEEDS_CONFIRMATION",
-                    "message", "L3 动作仅生成草稿/跳转，不能由 AI 直接执行"));
+                    Map.of("status", "DRAFT", "title", a.getOrDefault("title", "客服工单草稿")),stepKey));
             default -> throw new BusinessException("AI40401", "未实现工具: " + toolName);
         };
+    }
+
+    String executeApprovedDraft(String tool, Map<String, Object> args, long userId, long approvalId) {
+        ToolPolicy.authorize(tool, args, userId, true);
+        var approvals = jdbc.queryForList("""
+                SELECT t.arguments_json FROM ai_confirmation c
+                JOIN ai_tool_call t ON t.id=c.tool_call_id
+                JOIN ai_conversation v ON v.id=t.conversation_id
+                WHERE c.id=? AND c.user_id=? AND v.user_id=c.user_id AND c.status='CONFIRMED'
+                  AND c.execution_enabled=TRUE AND t.status='CONFIRMED' AND t.tool_name=?
+                """, approvalId, userId, tool);
+        if (approvals.isEmpty()) throw new BusinessException("AI40305", "缺少有效的所属用户审批");
+        try {
+            if (!mapper.readTree(String.valueOf(approvals.getFirst().get("arguments_json"))).equals(mapper.valueToTree(args))) {
+                throw new BusinessException("AI40305", "执行参数与审批不一致");
+            }
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new BusinessException("AI40014", "审批参数无效");
+        }
+        String draftType = switch (tool) {
+            case "cancel_paid_order_draft" -> "CANCEL_PAID_ORDER";
+            case "modify_address_draft" -> "MODIFY_ADDRESS";
+            default -> throw new BusinessException("AI40305", "该工具无法通过审批执行");
+        };
+        String draftNo = "AICF" + approvalId;
+        jdbc.update("""
+                INSERT INTO ai_business_draft(id,draft_no,user_id,draft_type,status,payload_json,created_at,updated_at)
+                VALUES(?,?,?,?,'DRAFT',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                ON DUPLICATE KEY UPDATE draft_no=draft_no
+                """, DistributedId.next(), draftNo, userId, draftType, json(args));
+        return draftNo;
+    }
+
+    void validateDraftResources(String tool, Map<String, Object> args, long userId, String authorization) {
+        ToolPolicy.authorize(tool, args, userId, true);
+        var order = getOrderDetail(authorization, String.valueOf(args.get("orderNo")));
+        if (!(order.get("data") instanceof Map<?, ?> detail)) {
+            throw new BusinessException("AI50301", "订单查询暂不可用，请稍后重试");
+        }
+        String status = String.valueOf(detail.get("status"));
+        Set<String> allowed = "cancel_paid_order_draft".equals(tool)
+                ? Set.of("PAID") : Set.of("PENDING_PAYMENT", "PAID");
+        if (!allowed.contains(status)) throw new BusinessException("AI40901", "当前订单状态无法生成该草稿");
+        if ("modify_address_draft".equals(tool)) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> address = memberClient.get().uri("/api/v1/user/addresses/{id}", args.get("addressId"))
+                        .headers(h -> applyAuth(h, authorization)).retrieve().body(Map.class);
+                if (address == null || !(address.get("data") instanceof Map<?, ?> data)
+                        || !(data.get("id") instanceof Number id) || id.longValue() != ((Number) args.get("addressId")).longValue()) {
+                    throw new BusinessException("AI40304", "收货地址不存在或无权访问");
+                }
+            } catch (RestClientResponseException e) {
+                if (Set.of(401, 403, 404).contains(e.getStatusCode().value())) {
+                    throw new BusinessException("AI40304", "收货地址不存在或无权访问");
+                }
+                throw new BusinessException("AI50301", "地址查询暂不可用，请稍后重试");
+            } catch (org.springframework.web.client.RestClientException e) {
+                throw new BusinessException("AI50301", "地址查询暂不可用，请稍后重试");
+            }
+        }
     }
 
     private Map<String, Object> searchProducts(Map<String, Object> a) {
@@ -287,7 +351,7 @@ public class ToolExecutor {
                 "message", "请提供本人 orderNo 以查询物流");
     }
 
-    private Map<String, Object> addCartItem(String userToken, long skuId, int quantity) {
+    private Map<String, Object> addCartItem(String userToken, long skuId, int quantity,String stepKey) {
         try {
             @SuppressWarnings("unchecked")
             Map<String, Object> node = tradeClient.post()
@@ -295,6 +359,7 @@ public class ToolExecutor {
                     .headers(h -> {
                         applyAuth(h, userToken);
                         h.set("Content-Type", "application/json");
+                        if(stepKey!=null) h.set("Idempotency-Key",stepKey);
                     })
                     .body(Map.of("skuId", skuId, "quantity", Math.max(1, quantity)))
                     .retrieve().body(Map.class);
@@ -314,7 +379,7 @@ public class ToolExecutor {
         }
     }
 
-    private Map<String, Object> createAftersaleDraft(long userId, Map<String, Object> a) {
+    private Map<String, Object> createAftersaleDraft(long userId, Map<String, Object> a,String stepKey) {
         // 正式售后申请走业务页；此处仅落 AI 侧草稿，不调用 aftersale APPLIED。
         Map<String, Object> draft = new LinkedHashMap<>();
         draft.put("type", a.getOrDefault("type", "REFUND_ONLY"));
@@ -329,18 +394,21 @@ public class ToolExecutor {
         } catch (Exception ignored) {
             draft.put("aftersaleService", "UNKNOWN");
         }
-        return saveDraft(userId, "AFTERSALE", a, draft);
+        return saveDraft(userId, "AFTERSALE", a, draft,stepKey);
     }
 
-    private Map<String, Object> saveDraft(long userId, String draftType, Map<String, Object> args, Map<String, Object> payload) {
+    private Map<String, Object> saveDraft(long userId, String draftType, Map<String, Object> args, Map<String, Object> payload,String stepKey) {
         long id = DistributedId.next();
-        String no = "AID" + id;
+        String no = stepKey==null ? "AID"+id : "AID"+stepKey;
         Instant now = Instant.now();
         jdbc.update("""
                 INSERT INTO ai_business_draft(id,draft_no,user_id,draft_type,status,payload_json,created_at,updated_at)
-                VALUES(?,?,?,?, 'DRAFT',?,?,?)
+                VALUES(?,?,?,?, 'DRAFT',?,?,?) ON DUPLICATE KEY UPDATE draft_no=draft_no
                 """, id, no, userId, draftType, json(payload), Timestamp.from(now), Timestamp.from(now));
-        Map<String, Object> out = new LinkedHashMap<>(payload);
+        var stored=jdbc.queryForMap("SELECT id,payload_json FROM ai_business_draft WHERE draft_no=? AND user_id=?",no,userId);
+        id=((Number)stored.get("id")).longValue();
+        Map<String,Object> out;
+        try { out=mapper.readValue(String.valueOf(stored.get("payload_json")),new com.fasterxml.jackson.core.type.TypeReference<LinkedHashMap<String,Object>>(){}); } catch(Exception e) { throw new IllegalStateException(e); }
         out.put("draftNo", no);
         out.put("draftId", id);
         out.put("status", "DRAFT");

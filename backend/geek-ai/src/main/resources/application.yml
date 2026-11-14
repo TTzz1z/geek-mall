@@ -19,21 +19,31 @@ geek:
   trade-service-url: ${TRADE_SERVICE_URL:http://localhost:9005}
   search-service-url: ${SEARCH_SERVICE_URL:http://localhost:9004}
   aftersale-service-url: ${AFTERSALE_SERVICE_URL:http://localhost:9008}
+  member-service-url: ${MEMBER_SERVICE_URL:http://localhost:9006}
   elasticsearch-url: ${ELASTICSEARCH_URL:http://localhost:9200}
-  milvus:
-    # Optional connection skeleton only. No vector write, health probe, or recall is implemented.
-    enabled: ${MILVUS_ENABLED:false}
-    host: ${MILVUS_HOST:localhost}
-    port: ${MILVUS_PORT:19530}
-  rag:
-    # Below this fused retrieval score, RAG returns no citations and declines parameter conclusions.
-    min-evidence-score: ${RAG_MIN_EVIDENCE_SCORE:0.45}
+  knowledge:
+    tika-url: ${TIKA_URL:http://localhost:9998}
+    minio-endpoint: ${MINIO_ENDPOINT:http://localhost:9100}
+    minio-bucket: ${MINIO_BUCKET:geek-product-documents}
+    minio-access-key: ${MINIO_ACCESS_KEY:geek}
+    minio-secret-key: ${MINIO_SECRET_KEY:CHANGE_ME_MINIO_SECRET_KEY}
+    embedding-url: ${EMBEDDING_URL:}
+    embedding-model: ${EMBEDDING_MODEL:BAAI/bge-m3}
+    embedding-key: ${EMBEDDING_API_KEY:}
+    minimum-similarity: ${KNOWLEDGE_MINIMUM_SIMILARITY:0.62}
+    require-semantic-gate: ${KNOWLEDGE_REQUIRE_SEMANTIC_GATE:false}
+    index: ${KNOWLEDGE_INDEX:geek-knowledge-v2}
   llm:
     enabled: ${LLM_ENABLED:true}
     base-url: ${LLM_BASE_URL:https://api.deepseek.com}
     api-key: ${LLM_API_KEY:}
     model: ${LLM_MODEL:deepseek-v4-flash}
     timeout-ms: ${LLM_TIMEOUT_MS:60000}
+    header-timeout-ms: ${LLM_HEADER_TIMEOUT_MS:15000}
+    first-byte-timeout-ms: ${LLM_FIRST_BYTE_TIMEOUT_MS:15000}
+    body-idle-timeout-ms: ${LLM_BODY_IDLE_TIMEOUT_MS:15000}
+    total-timeout-ms: ${LLM_TOTAL_TIMEOUT_MS:60000}
+    max-output-tokens: ${LLM_MAX_OUTPUT_TOKENS:2048}
     planner-enabled: ${LLM_PLANNER_ENABLED:true}
     planner-timeout-ms: ${LLM_PLANNER_TIMEOUT_MS:12000}
     planner-max-tool-steps: ${LLM_PLANNER_MAX_TOOL_STEPS:5}
@@ -47,3 +57,6 @@ geek:
     fallback: ${AI_MODEL_FALLBACK:geek-chat-fallback}
     fail-primary: ${AI_MODEL_FAIL_PRIMARY:false}
 management.endpoints.web.exposure.include: health,info,prometheus
+management.tracing.sampling.probability: ${AI_TRACE_SAMPLE_RATE:0.0}
+management.otlp.tracing.endpoint: ${AI_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+management.opentelemetry.resource-attributes.service.name: geek-ai

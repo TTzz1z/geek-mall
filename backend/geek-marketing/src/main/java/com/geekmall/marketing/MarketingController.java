@@ -13,9 +13,6 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
-import java.math.BigDecimal;
-import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -24,18 +21,11 @@ import java.util.UUID;
 @RequestMapping("/api/v1")
 class MarketingController {
     private final JdbcTemplate jdbc;
-    private final RedisLuaClient redis;
-    private final MarketingEventStore events;
     private final SeckillInventoryService seckill;
-    private final PromotionService promotions;
 
-    MarketingController(JdbcTemplate jdbc, RedisLuaClient redis, MarketingEventStore events,
-                        SeckillInventoryService seckill, PromotionService promotions) {
+    MarketingController(JdbcTemplate jdbc, SeckillInventoryService seckill) {
         this.jdbc = jdbc;
-        this.redis = redis;
-        this.events = events;
         this.seckill = seckill;
-        this.promotions = promotions;
     }
 
     @GetMapping("/marketing/coupons/available")
@@ -73,7 +63,7 @@ class MarketingController {
     @GetMapping("/marketing/seckill/sessions")
     ApiResponse<List<Map<String, Object>>> sessions(HttpServletRequest r) {
         return ok(jdbc.queryForList(
-                "SELECT s.id,s.session_code AS sessionCode,s.start_at AS startAt,s.end_at AS endAt,i.sku_id AS skuId,i.price,i.stock_qty AS stockQty,i.limit_per_user AS limitPerUser,i.warm_status AS warmStatus FROM marketing_seckill_session s JOIN marketing_seckill_item i ON i.session_id=s.id WHERE s.status='ENABLED' AND i.status='ENABLED' ORDER BY s.start_at"), r);
+                "SELECT s.id,s.session_code AS sessionCode,s.start_at AS startAt,s.end_at AS endAt,i.sku_id AS skuId,i.price,GREATEST(i.stock_qty-i.reserved_qty,0) AS stockQty,i.limit_per_user AS limitPerUser,i.warm_status AS warmStatus FROM marketing_seckill_session s JOIN marketing_seckill_item i ON i.session_id=s.id WHERE s.status='ENABLED' AND i.status='ENABLED' ORDER BY s.start_at"), r);
     }
 
     @PostMapping("/marketing/seckill/{skuId}/qualify")
@@ -81,7 +71,9 @@ class MarketingController {
     ApiResponse<Map<String, Object>> qualify(@PathVariable long skuId, @RequestParam long sessionId,
                                              @AuthenticationPrincipal AuthPrincipal p, HttpServletRequest r) {
         var rows = jdbc.queryForList("""
-                SELECT i.stock_qty AS stockQty,i.status AS itemStatus,s.start_at AS startAt,s.end_at AS endAt,s.status AS sessionStatus
+                SELECT GREATEST(i.stock_qty-i.reserved_qty,0) AS stockQty,i.status AS itemStatus,
+                       CASE WHEN s.status='ENABLED' AND s.start_at<=CURRENT_TIMESTAMP(3) AND s.end_at>CURRENT_TIMESTAMP(3)
+                            THEN 1 ELSE 0 END AS activeSession
                 FROM marketing_seckill_item i
                 JOIN marketing_seckill_session s ON s.id=i.session_id
                 WHERE i.session_id=? AND i.sku_id=?
@@ -91,10 +83,7 @@ class MarketingController {
                     "reason", "NOT_FOUND"), r);
         }
         var row = rows.getFirst();
-        Instant now = Instant.now();
-        Instant start = ((Timestamp) row.get("startAt")).toInstant();
-        Instant end = ((Timestamp) row.get("endAt")).toInstant();
-        boolean inWindow = !now.isBefore(start) && now.isBefore(end) && "ENABLED".equals(String.valueOf(row.get("sessionStatus")));
+        boolean inWindow = ((Number) row.get("activeSession")).intValue() == 1;
         int stock = ((Number) row.get("stockQty")).intValue();
         boolean itemEnabled = "ENABLED".equals(String.valueOf(row.get("itemStatus")));
         boolean qualified = inWindow && stock > 0 && itemEnabled;
@@ -111,54 +100,12 @@ class MarketingController {
 
     @PostMapping("/marketing/seckill/{skuId}/orders")
     @PreAuthorize("hasRole('USER')")
-    @Transactional
     ApiResponse<Map<String, Object>> order(@PathVariable long skuId, @Valid @RequestBody SeckillOrder body,
                                            @RequestHeader(value = "Idempotency-Key", required = false) String requestId,
                                            @AuthenticationPrincipal AuthPrincipal p, HttpServletRequest r) {
         if (requestId == null || requestId.isBlank()) requestId = UUID.randomUUID().toString();
-        // Idempotency BEFORE Redis Lua — avoids double-decr on client retry with same key.
-        var existing = jdbc.queryForList(
-                "SELECT id,status,trade_order_no AS tradeOrderNo FROM marketing_seckill_order WHERE request_id=?", requestId);
-        if (!existing.isEmpty()) {
-            var e = existing.getFirst();
-            return ok(Map.of("seckillOrderId", e.get("id"), "status", e.get("status"),
-                    "tradeOrderNo", e.get("tradeOrderNo"), "idempotentReplay", true), r);
-        }
-        var row = item(body.sessionId(), skuId);
-        seckill.warm(body.sessionId(), skuId);
-        String stock = "seckill:stock:" + body.sessionId() + ":" + skuId;
-        String limit = "seckill:user:" + body.sessionId() + ":" + skuId + ":" + p.userId();
-        String lua = "local n=redis.call('GET',KEYS[1]); if not n then return -3 end; if tonumber(n)<tonumber(ARGV[1]) then return -1 end; local u=redis.call('GET',KEYS[2]); if u and tonumber(u)+tonumber(ARGV[1])>tonumber(ARGV[2]) then return -2 end; redis.call('DECRBY',KEYS[1],ARGV[1]); redis.call('INCRBY',KEYS[2],ARGV[1]); redis.call('EXPIRE',KEYS[2],ARGV[3]); return 1";
-        Object result = redis.eval(lua, List.of(stock, limit),
-                List.of(String.valueOf(body.quantity()), String.valueOf(row.get("limit_per_user")), "3600"));
-        if (!Long.valueOf(1).equals(result)) {
-            throw new BusinessException("MK40903", switch (((Number) result).intValue()) {
-                case -1 -> "秒杀库存不足";
-                case -2 -> "超过单人限购";
-                default -> "秒杀尚未预热";
-            });
-        }
-        long id = DistributedId.next();
-        Instant expires = Instant.now().plusSeconds(900);
-        try {
-            jdbc.update(
-                    "INSERT INTO marketing_seckill_order(id,session_id,sku_id,user_id,quantity,request_id,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,'QUEUED',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
-                    id, body.sessionId(), skuId, p.userId(), body.quantity(), requestId, Timestamp.from(expires));
-        } catch (Exception e) {
-            seckill.release(body.sessionId(), skuId, p.userId(), body.quantity());
-            throw new BusinessException("MK40904", "秒杀请求重复");
-        }
-        events.append("SECKILL_ORDER", String.valueOf(id), MarketingRabbitConfiguration.SECKILL_ROUTING, Map.of(
-                "seckillOrderId", id,
-                "sessionId", body.sessionId(),
-                "skuId", skuId,
-                "userId", p.userId(),
-                "quantity", body.quantity(),
-                "requestId", requestId,
-                "price", row.get("price"),
-                "addressId", body.addressId(),
-                "expiresAt", expires.toString()));
-        return ok(Map.of("seckillOrderId", id, "status", "QUEUED", "requestId", requestId), r);
+        return ok(seckill.order(body.sessionId(), skuId, p.userId(), body.quantity(), body.addressId(), requestId)
+                .response(true), r);
     }
 
     @PostMapping("/admin/marketing/campaigns")
@@ -175,7 +122,8 @@ class MarketingController {
     ApiResponse<List<Map<String, Object>>> adminSessions(HttpServletRequest r) {
         return ok(jdbc.queryForList("""
                 SELECT s.id AS sessionId, s.session_code AS sessionCode, s.start_at AS startAt, s.end_at AS endAt, s.status AS sessionStatus,
-                       i.sku_id AS skuId, i.price, i.stock_qty AS stockQty, i.limit_per_user AS limitPerUser, i.warm_status AS warmStatus, i.status AS itemStatus
+                       i.sku_id AS skuId, i.price, GREATEST(i.stock_qty-i.reserved_qty,0) AS stockQty,
+                       i.limit_per_user AS limitPerUser, i.warm_status AS warmStatus, i.status AS itemStatus
                 FROM marketing_seckill_session s
                 LEFT JOIN marketing_seckill_item i ON i.session_id=s.id
                 ORDER BY s.start_at DESC, i.sku_id
@@ -187,14 +135,6 @@ class MarketingController {
     ApiResponse<Map<String, Object>> warmup(@RequestParam long sessionId, @RequestParam long skuId, HttpServletRequest r) {
         seckill.warm(sessionId, skuId);
         return ok(Map.of("sessionId", sessionId, "skuId", skuId, "warmStatus", "HOT"), r);
-    }
-
-    private Map<String, Object> item(long s, long sku) {
-        var rows = jdbc.queryForList(
-                "SELECT i.price,i.limit_per_user,s.start_at,s.end_at FROM marketing_seckill_item i JOIN marketing_seckill_session s ON s.id=i.session_id WHERE i.session_id=? AND i.sku_id=? AND i.status='ENABLED' AND s.status='ENABLED' AND s.start_at<=CURRENT_TIMESTAMP AND s.end_at>CURRENT_TIMESTAMP",
-                s, sku);
-        if (rows.isEmpty()) throw new BusinessException("MK40401", "秒杀商品或场次不可用");
-        return rows.getFirst();
     }
 
     private static <T> ApiResponse<T> ok(T d, HttpServletRequest r) {

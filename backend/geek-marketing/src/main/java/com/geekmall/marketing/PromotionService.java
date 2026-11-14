@@ -52,8 +52,26 @@ class PromotionService {
 
     @Transactional
     Map<String, Object> freezeCoupon(String orderNo, long userId, long userCouponId, BigDecimal amount) {
-        var old = jdbc.queryForList("SELECT status FROM marketing_coupon_reservation WHERE order_no=?", orderNo);
-        if (!old.isEmpty()) return Map.of("orderNo", orderNo, "idempotentReplay", true);
+        lockOrder(orderNo, false);
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT closed FROM marketing_coupon_order_lock WHERE order_no=?", Boolean.class, orderNo))) {
+            throw new BusinessException("MK40909", "订单优惠券预留已关闭");
+        }
+        var coupons = jdbc.queryForList("""
+                SELECT id FROM marketing_user_coupon WHERE id=? AND user_id=? FOR UPDATE
+                """, userCouponId, userId);
+        if (coupons.isEmpty()) throw new BusinessException("MK40907", "优惠券冻结失败");
+        var old = jdbc.queryForList("""
+                SELECT status,user_coupon_id,amount FROM marketing_coupon_reservation WHERE order_no=? FOR UPDATE
+                """, orderNo);
+        if (!old.isEmpty()) {
+            var reservation = old.getFirst();
+            if (((Number) reservation.get("user_coupon_id")).longValue() != userCouponId
+                    || ((BigDecimal) reservation.get("amount")).compareTo(amount) != 0
+                    || !"FROZEN".equals(reservation.get("status"))) {
+                throw new BusinessException("MK40907", "优惠券冻结请求与已有预留不一致");
+            }
+            return Map.of("orderNo", orderNo, "idempotentReplay", true);
+        }
         int changed = jdbc.update(
                 "UPDATE marketing_user_coupon SET status='FROZEN',freeze_order_no=?,frozen_amount=? WHERE id=? AND user_id=? AND status='UNUSED'",
                 orderNo, amount, userCouponId, userId);
@@ -66,6 +84,7 @@ class PromotionService {
 
     @Transactional
     Map<String, Object> settleCoupon(String orderNo, String action) {
+        lockOrder(orderNo, "release".equals(action));
         var rows = jdbc.queryForList("SELECT user_coupon_id,amount,status FROM marketing_coupon_reservation WHERE order_no=? FOR UPDATE", orderNo);
         if (rows.isEmpty()) {
             if ("release".equals(action)) return Map.of("orderNo", orderNo, "status", "RELEASED", "idempotentReplay", true);
@@ -83,6 +102,11 @@ class PromotionService {
         }
         jdbc.update("UPDATE marketing_coupon_reservation SET status=?,updated_at=CURRENT_TIMESTAMP WHERE order_no=?", target, orderNo);
         return Map.of("orderNo", orderNo, "status", target, "idempotentReplay", false);
+    }
+
+    private void lockOrder(String orderNo, boolean close) {
+        // The upsert takes the same row lock even if no reservation has arrived yet.
+        jdbc.update("INSERT INTO marketing_coupon_order_lock(order_no,closed) VALUES(?,?) ON DUPLICATE KEY UPDATE closed=closed OR VALUES(closed)", orderNo, close);
     }
 
     @SuppressWarnings("unchecked")

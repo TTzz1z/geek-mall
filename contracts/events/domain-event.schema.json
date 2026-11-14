@@ -14,6 +14,10 @@
         "payment.payment.succeeded.v1",
         "trade.order.cancelled.v1",
         "inventory.stock.deducted.v1",
+        "inventory.stock.reserved.v1",
+        "inventory.stock.released.v1",
+        "inventory.fulfillment.status-changed.v1",
+        "marketing.seckill.order.v1",
         "aftersale.refund.completed.v1"
       ]
     },
@@ -22,5 +26,37 @@
     "payload": { "type": "object" },
     "occurredAt": { "type": "string" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "eventType": { "const": "payment.payment.succeeded.v1" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["orderNo", "amount", "channel"],
+            "properties": {
+              "orderNo": { "type": "string", "minLength": 1 },
+              "paymentNo": { "type": "string", "minLength": 1 },
+              "amount": { "type": "number", "minimum": 0 },
+              "channel": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "inventory.fulfillment.status-changed.v1" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["orderNo", "status"],
+            "properties": {
+              "orderNo": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["SHIPPED", "COMPLETED"] }
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": true
 }

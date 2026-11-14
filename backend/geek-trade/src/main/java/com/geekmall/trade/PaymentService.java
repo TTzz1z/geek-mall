@@ -22,26 +22,22 @@ class PaymentService {
     private final TransactionTemplate tx;
     private final UnavailableRealPaymentAdapters adapters;
     private final InventoryClient inventory;
-    private final OrderService orders;
     private final TradeEventStore events;
-    private final MarketingClient marketing;
-    private final MemberClient member;
+    private final TradeTasks tasks;
     private final String merchantNo;
     private final String secret;
 
     PaymentService(JdbcTemplate jdbc, PlatformTransactionManager manager,
-                   UnavailableRealPaymentAdapters adapters, InventoryClient inventory, OrderService orders,
-                   TradeEventStore events, MarketingClient marketing, MemberClient member,
+                   UnavailableRealPaymentAdapters adapters, InventoryClient inventory,
+                   TradeEventStore events, TradeTasks tasks,
                    @Value("${geek.payment.merchant-no}") String merchantNo,
                    @Value("${geek.payment.callback-secret}") String secret) {
         this.jdbc = jdbc;
         this.tx = new TransactionTemplate(manager);
         this.adapters = adapters;
         this.inventory = inventory;
-        this.orders = orders;
         this.events = events;
-        this.marketing = marketing;
-        this.member = member;
+        this.tasks = tasks;
         this.merchantNo = merchantNo;
         this.secret = secret;
     }
@@ -76,7 +72,15 @@ class PaymentService {
         if (rows.isEmpty()) {
             throw new BusinessException("TR40405", "支付单不存在");
         }
-        return rows.getFirst();
+        var result = rows.getFirst();
+        var returns = jdbc.queryForList("""
+                SELECT return_no AS returnNo,status AS status,amount,
+                    channel_return_no AS channelReturnNo,retry_count AS retryCount,
+                    last_error AS lastError,succeeded_at AS succeededAt,updated_at AS updatedAt
+                FROM trade_late_payment_return WHERE payment_no=?
+                """, no);
+        result.put("lateReturn", returns.isEmpty() ? null : returns.getFirst());
+        return result;
     }
 
     Map<String, Object> simulate(long userId, String no) {
@@ -86,7 +90,7 @@ class PaymentService {
         }
         PaymentController.Callback body = new PaymentController.Callback(
                 UUID.randomUUID().toString(), no, merchantNo, (BigDecimal) payment.get("amount"),
-                "SUCCESS", "MOCK-" + DistributedId.next());
+                "SUCCESS", payment.get("channelTradeNo") == null ? "MOCK-" + DistributedId.next() : String.valueOf(payment.get("channelTradeNo")));
         return callback("SIMULATED", sign(canonical("SIMULATED", body)), body);
     }
 
@@ -100,38 +104,11 @@ class PaymentService {
         }
         String hash = CheckoutService.sha256(canonical);
         CallbackResult result = tx.execute(status -> process(channel.toUpperCase(Locale.ROOT), body, hash));
-        if (result.orderNo() != null && result.orderPaid()) {
-            runPostPayEffects(result.orderNo());
-        }
         return Map.of(
                 "paymentNo", body.paymentNo(),
                 "orderNo", Objects.requireNonNullElse(result.orderNo(), ""),
                 "status", result.status(),
                 "idempotentReplay", result.replay());
-    }
-
-    private void runPostPayEffects(String orderNo) {
-        try {
-            inventory.deduct(orderNo);
-            jdbc.update("UPDATE trade_order SET inventory_status='DEDUCTED',updated_at=CURRENT_TIMESTAMP WHERE order_no=? AND status='PAID'",
-                    orderNo);
-        } catch (BusinessException e) {
-            orders.schedule(orderNo, "DEDUCT_STOCK", e.getMessage());
-        } catch (Exception e) {
-            orders.schedule(orderNo, "DEDUCT_STOCK", String.valueOf(e.getMessage()));
-        }
-        try {
-            marketing.settleCoupon(orderNo, "use");
-            member.settlePoints(orderNo, "use");
-        } catch (Exception e) {
-            orders.schedule(orderNo, "SETTLE_ASSETS", String.valueOf(e.getMessage()));
-        }
-        try {
-            createFulfillments(orderNo);
-        } catch (Exception e) {
-            orders.schedule(orderNo, "CREATE_FULFILLMENT", String.valueOf(e.getMessage()));
-        }
-        // Settlement is deferred to confirm-receive (order COMPLETED), not payment success.
     }
 
     void createFulfillments(String orderNo) {
@@ -140,7 +117,7 @@ class PaymentService {
                 SELECT fp.warehouse_id AS warehouseId,fp.sku_id AS skuId,fp.quantity,
                        s.merchant_id AS merchantId,i.id AS orderItemId
                 FROM trade_fulfillment_plan fp
-                JOIN trade_order_item i ON i.order_id=fp.order_id AND i.sku_id=fp.sku_id
+                JOIN trade_order_item i ON i.sub_order_id=fp.sub_order_id AND i.sku_id=fp.sku_id
                 JOIN trade_sub_order s ON s.id=i.sub_order_id
                 JOIN trade_order o ON o.id=fp.order_id
                 WHERE o.order_no=?
@@ -165,6 +142,29 @@ class PaymentService {
         }
     }
 
+    void returnLatePayment(String paymentNo) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT * FROM trade_late_payment_return WHERE payment_no=?", paymentNo);
+        if ("SUCCESS".equals(row.get("status"))) return;
+        String channelTradeNo = String.valueOf(row.get("channel_trade_no"));
+        BigDecimal amount = (BigDecimal) row.get("amount");
+        try {
+            var adapter = adapters.require(String.valueOf(row.get("channel")));
+            String receipt = adapter.queryReturn(paymentNo, channelTradeNo, amount);
+            if (receipt == null) receipt = adapter.returnPayment(paymentNo, channelTradeNo, amount);
+            if (receipt == null || receipt.isBlank()) throw new IllegalStateException("渠道尚未确认返还结果");
+            String confirmedReceipt = receipt;
+            tx.executeWithoutResult(status -> {
+                jdbc.update("UPDATE trade_late_payment_return SET status='SUCCESS',channel_return_no=?,last_error=NULL,succeeded_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE payment_no=? AND status<>'SUCCESS'", confirmedReceipt, paymentNo);
+                jdbc.update("UPDATE trade_payment SET status='LATE_RETURNED',updated_at=CURRENT_TIMESTAMP WHERE payment_no=? AND status='LATE_SUCCESS'", paymentNo);
+                jdbc.update("UPDATE trade_payment_callback SET process_status='RETURNED',detail='CHANNEL_RETURN_CONFIRMED',processed_at=CURRENT_TIMESTAMP WHERE payment_no=? AND process_status='RETURN_PENDING'", paymentNo);
+            });
+        } catch (Exception error) {
+            String detail = String.valueOf(error.getMessage());
+            jdbc.update("UPDATE trade_late_payment_return SET status='RETRY',retry_count=retry_count+1,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE payment_no=? AND status<>'SUCCESS'", detail.substring(0, Math.min(490, detail.length())), paymentNo);
+            throw error;
+        }
+    }
+
     private CallbackResult process(String channel, PaymentController.Callback body, String hash) {
         try {
             jdbc.update("""
@@ -181,7 +181,7 @@ class PaymentService {
             String orderNo = jdbc.queryForObject(
                     "SELECT o.order_no FROM trade_payment p JOIN trade_order o ON o.id=p.order_id WHERE p.payment_no=?",
                     String.class, body.paymentNo());
-            return new CallbackResult(orderNo, String.valueOf(old.get("process_status")), true, false);
+            return new CallbackResult(orderNo, String.valueOf(old.get("process_status")), true);
         }
         Map<String, Object> payment = jdbc.queryForMap("SELECT * FROM trade_payment WHERE payment_no=? FOR UPDATE", body.paymentNo());
         if (!channel.equals(payment.get("channel"))) {
@@ -198,14 +198,22 @@ class PaymentService {
         if ("SUCCESS".equals(payment.get("status"))) {
             jdbc.update("UPDATE trade_payment_callback SET process_status='SUCCESS',processed_at=CURRENT_TIMESTAMP WHERE channel=? AND callback_id=?",
                     channel, body.callbackId());
-            return new CallbackResult(orderNo, "SUCCESS", true, false);
+            return new CallbackResult(orderNo, "SUCCESS", true);
+        }
+        if (Set.of("LATE_SUCCESS", "LATE_RETURNED").contains(payment.get("status"))) {
+            if ("SUCCESS".equals(body.status()) && !Objects.equals(payment.get("channel_trade_no"), body.channelTradeNo())) {
+                throw new BusinessException("TR40916", "同一支付单收到不同渠道成功流水");
+            }
+            String state = "LATE_RETURNED".equals(payment.get("status")) ? "RETURNED" : "RETURN_PENDING";
+            jdbc.update("UPDATE trade_payment_callback SET process_status=?,processed_at=CURRENT_TIMESTAMP WHERE channel=? AND callback_id=?", state, channel, body.callbackId());
+            return new CallbackResult(orderNo, state, true);
         }
         if (!"SUCCESS".equals(body.status())) {
             jdbc.update("UPDATE trade_payment SET status='FAILED',channel_trade_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                     body.channelTradeNo(), payment.get("id"));
             jdbc.update("UPDATE trade_payment_callback SET process_status='FAILED',processed_at=CURRENT_TIMESTAMP WHERE channel=? AND callback_id=?",
                     channel, body.callbackId());
-            return new CallbackResult(orderNo, "FAILED", false, false);
+            return new CallbackResult(orderNo, "FAILED", false);
         }
         if ("PENDING_PAYMENT".equals(order.get("status")) && order.get("paid_payment_id") == null) {
             jdbc.update("UPDATE trade_payment SET status='SUCCESS',channel_trade_no=?,paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -228,18 +236,25 @@ class PaymentService {
                     """, DistributedId.next(), order.get("id"), body.channelTradeNo());
             events.append("PAYMENT", body.paymentNo(), "payment.payment.succeeded.v1",
                     Map.of("paymentNo", body.paymentNo(), "orderNo", orderNo, "amount", body.amount(), "channel", channel));
+            tasks.enqueue("DEDUCT_STOCK", orderNo);
+            tasks.enqueue("SETTLE_ASSETS", orderNo);
+            tasks.enqueue("CREATE_FULFILLMENT", orderNo);
             jdbc.update("UPDATE trade_payment_callback SET process_status='SUCCESS',processed_at=CURRENT_TIMESTAMP WHERE channel=? AND callback_id=?",
                     channel, body.callbackId());
-            return new CallbackResult(orderNo, "SUCCESS", false, true);
+            return new CallbackResult(orderNo, "SUCCESS", false);
         }
         jdbc.update("UPDATE trade_payment SET status='LATE_SUCCESS',channel_trade_no=?,paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 body.channelTradeNo(), payment.get("id"));
         jdbc.update("""
-                UPDATE trade_payment_callback SET process_status='MANUAL_REVIEW',detail='ORDER_NOT_PAYABLE',processed_at=CURRENT_TIMESTAMP
+                UPDATE trade_payment_callback SET process_status='RETURN_PENDING',detail='ORDER_NOT_PAYABLE',processed_at=CURRENT_TIMESTAMP
                 WHERE channel=? AND callback_id=?
                 """, channel, body.callbackId());
-        orders.schedule(orderNo, "PAYMENT_AFTER_CLOSE", "订单已关闭或已由其他支付单支付");
-        return new CallbackResult(orderNo, "MANUAL_REVIEW", false, false);
+        jdbc.update("""
+                INSERT INTO trade_late_payment_return(payment_no,order_no,channel,channel_trade_no,amount,return_no,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,'PENDING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                """, body.paymentNo(), orderNo, channel, body.channelTradeNo(), body.amount(), "LPR" + payment.get("id"));
+        tasks.enqueue("PAYMENT_AFTER_CLOSE", body.paymentNo(), "订单已关闭或已由其他支付单支付");
+        return new CallbackResult(orderNo, "RETURN_PENDING", false);
     }
 
     private String canonical(String channel, PaymentController.Callback b) {
@@ -261,6 +276,6 @@ class PaymentService {
         return b != null && MessageDigest.isEqual(a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8));
     }
 
-    record CallbackResult(String orderNo, String status, boolean replay, boolean orderPaid) {
+    record CallbackResult(String orderNo, String status, boolean replay) {
     }
 }

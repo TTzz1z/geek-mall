@@ -1,0 +1,28 @@
+[ {
+  "model" : "LEXICAL",
+  "ndcg" : 1.0,
+  "passesProvisionalThresholds" : false,
+  "mrr" : 1.0,
+  "noAnswerFalsePositiveRate" : 0.8333333333333334,
+  "recall" : 1.0,
+  "report" : "retrieval-LEXICAL.json",
+  "p95LatencyMs" : 28.8006
+}, {
+  "model" : "qwen3-embedding:0.6b",
+  "ndcg" : 1.0,
+  "passesProvisionalThresholds" : false,
+  "mrr" : 1.0,
+  "noAnswerFalsePositiveRate" : 0.8333333333333334,
+  "recall" : 1.0,
+  "report" : "retrieval-qwen3-embedding_0.6b.json",
+  "p95LatencyMs" : 58.8734
+}, {
+  "model" : "bge-m3:latest",
+  "ndcg" : 1.0,
+  "passesProvisionalThresholds" : false,
+  "mrr" : 1.0,
+  "noAnswerFalsePositiveRate" : 0.8333333333333334,
+  "recall" : 1.0,
+  "report" : "retrieval-bge-m3_latest.json",
+  "p95LatencyMs" : 57.1265
+} ]

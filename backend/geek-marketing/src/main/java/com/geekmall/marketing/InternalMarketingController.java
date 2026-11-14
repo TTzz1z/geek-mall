@@ -1,36 +1,28 @@
 package com.geekmall.marketing;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.geekmall.common.api.ApiResponse;
 import com.geekmall.common.api.BusinessException;
-import com.geekmall.common.domain.DistributedId;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.time.Instant;
-import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/internal/marketing")
 class InternalMarketingController {
     private final JdbcTemplate jdbc;
     private final PromotionService promotions;
-    private final RedisLuaClient redis;
-    private final MarketingEventStore events;
     private final SeckillInventoryService seckillInventory;
     private final String internalKey;
 
-    InternalMarketingController(JdbcTemplate jdbc, PromotionService promotions, RedisLuaClient redis,
-                              MarketingEventStore events, SeckillInventoryService seckillInventory,
+    InternalMarketingController(JdbcTemplate jdbc, PromotionService promotions, SeckillInventoryService seckillInventory,
                               @Value("${geek.internal-key}") String internalKey) {
         this.jdbc = jdbc;
         this.promotions = promotions;
-        this.redis = redis;
-        this.events = events;
         this.seckillInventory = seckillInventory;
         this.internalKey = internalKey;
     }
@@ -68,12 +60,36 @@ class InternalMarketingController {
                                                  @PathVariable long seckillOrderId,
                                                  @RequestParam String tradeOrderNo) {
         require(key);
-        jdbc.update("UPDATE marketing_seckill_order SET status='CREATED',trade_order_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='QUEUED'", tradeOrderNo, seckillOrderId);
+        confirmSeckill("id", seckillOrderId, tradeOrderNo);
         return ApiResponse.success(Map.of("seckillOrderId", seckillOrderId, "tradeOrderNo", tradeOrderNo), null);
     }
 
-    @PostMapping("/seckill/release")
+    @PostMapping("/seckill/requests/{requestId}/created")
     @Transactional
+    ApiResponse<Map<String, Object>> markCreatedByRequest(@RequestHeader("X-Internal-Key") String key,
+                                                          @PathVariable String requestId,
+                                                          @RequestParam String tradeOrderNo) {
+        require(key);
+        confirmSeckill("request_id", requestId, tradeOrderNo);
+        return ApiResponse.success(Map.of("requestId", requestId, "tradeOrderNo", tradeOrderNo), null);
+    }
+
+    private void confirmSeckill(String column, Object value, String tradeOrderNo) {
+        var rows = jdbc.queryForList("SELECT id,status,trade_order_no FROM marketing_seckill_order WHERE " + column + "=? FOR UPDATE", value);
+        if (rows.isEmpty()) throw new BusinessException("MK40905", "秒杀请求不存在或已失效");
+        var row = rows.getFirst();
+        if ("CREATED".equals(row.get("status")) && tradeOrderNo.equals(row.get("trade_order_no"))) return;
+        if (!"QUEUED".equals(row.get("status"))) throw new BusinessException("MK40905", "秒杀请求状态与交易订单冲突");
+        int confirmed = jdbc.update("""
+                UPDATE marketing_seckill_order SET status='CREATED',trade_order_no=?,updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND expires_at>CURRENT_TIMESTAMP(3)
+                """, tradeOrderNo, row.get("id"));
+        if (confirmed == 0) {
+            throw new BusinessException("MK40905", "秒杀请求已过期");
+        }
+    }
+
+    @PostMapping("/seckill/release")
     ApiResponse<Map<String, Object>> releaseSeckill(@RequestHeader("X-Internal-Key") String key,
                                                      @RequestBody Map<String, Object> body) {
         require(key);
@@ -94,70 +110,26 @@ class InternalMarketingController {
         return ApiResponse.success(Map.of("sessionId", sessionId, "skuId", skuId, "warmStatus", "HOT"), null);
     }
 
-    void warm(long sessionId, long skuId) {
-        seckillInventory.warm(sessionId, skuId);
-    }
-
     @PostMapping("/seckill/{skuId}/orders")
-    @Transactional
     ApiResponse<Map<String, Object>> internalSeckillOrder(@RequestHeader("X-Internal-Key") String key,
                                                           @PathVariable long skuId,
-                                                          @RequestBody Map<String, Object> body) {
+                                                          @RequestBody JsonNode body) {
         require(key);
-        long sessionId = ((Number) body.get("sessionId")).longValue();
-        long userId = ((Number) body.get("userId")).longValue();
-        int quantity = ((Number) body.get("quantity")).intValue();
-        String requestId = String.valueOf(body.get("requestId"));
-        // Idempotency BEFORE Redis Lua — same key must not double-decr stock on retry.
-        var existing = jdbc.queryForList("SELECT id,status,trade_order_no FROM marketing_seckill_order WHERE request_id=?", requestId);
-        if (!existing.isEmpty()) {
-            var row = existing.getFirst();
-            return ApiResponse.success(Map.of("seckillOrderId", row.get("id"), "status", row.get("status"), "tradeOrderNo", row.get("trade_order_no"), "idempotentReplay", true), null);
+        var sessionId = body.path("sessionId");
+        var userId = body.path("userId");
+        var quantity = body.path("quantity");
+        if (!validLong(sessionId) || !validLong(userId) || !quantity.isIntegralNumber() || !quantity.canConvertToInt()) {
+            throw new BusinessException("MK40031", "秒杀下单参数无效");
         }
-        var item = item(sessionId, skuId);
-        warmIfCold(sessionId, skuId);
-        String stock = "seckill:stock:" + sessionId + ":" + skuId;
-        String limit = "seckill:user:" + sessionId + ":" + skuId + ":" + userId;
-        String lua = "local n=redis.call('GET',KEYS[1]); if not n then return -3 end; if tonumber(n)<tonumber(ARGV[1]) then return -1 end; local u=redis.call('GET',KEYS[2]); if u and tonumber(u)+tonumber(ARGV[1])>tonumber(ARGV[2]) then return -2 end; redis.call('DECRBY',KEYS[1],ARGV[1]); redis.call('INCRBY',KEYS[2],ARGV[1]); redis.call('EXPIRE',KEYS[2],ARGV[3]); return 1";
-        Object result = redis.eval(lua, List.of(stock, limit), List.of(String.valueOf(quantity), String.valueOf(item.get("limit_per_user")), "3600"));
-        if (!Long.valueOf(1).equals(result)) {
-            throw new BusinessException("MK40903", switch (((Number) result).intValue()) {
-                case -1 -> "秒杀库存不足";
-                case -2 -> "超过单人限购";
-                default -> "秒杀尚未预热";
-            });
-        }
-        long id = DistributedId.next();
-        Instant expires = Instant.now().plusSeconds(900);
-        Object addressIdRaw = body.get("addressId");
-        if (addressIdRaw == null) {
-            throw new BusinessException("MK40030", "秒杀下单必须选择收货地址");
-        }
-        long addressId = ((Number) addressIdRaw).longValue();
-        try {
-            jdbc.update("INSERT INTO marketing_seckill_order(id,session_id,sku_id,user_id,quantity,request_id,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,'QUEUED',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
-                    id, sessionId, skuId, userId, quantity, requestId, java.sql.Timestamp.from(expires));
-        } catch (Exception e) {
-            redis.eval("redis.call('INCRBY',KEYS[1],ARGV[1]); redis.call('DECRBY',KEYS[2],ARGV[1]); return 1", List.of(stock, limit), List.of(String.valueOf(quantity)));
-            throw new BusinessException("MK40904", "秒杀请求重复");
-        }
-        events.append("SECKILL_ORDER", String.valueOf(id), MarketingRabbitConfiguration.SECKILL_ROUTING,
-                Map.of("seckillOrderId", id, "sessionId", sessionId, "skuId", skuId, "userId", userId, "quantity", quantity,
-                        "requestId", requestId, "price", item.get("price"), "addressId", addressId, "expiresAt", expires.toString()));
-        return ApiResponse.success(Map.of("seckillOrderId", id, "status", "QUEUED", "idempotentReplay", false), null);
+        var address = body.path("addressId");
+        Long addressId = validLong(address) ? address.longValue() : null;
+        var result = seckillInventory.order(sessionId.longValue(), skuId, userId.longValue(), quantity.intValue(),
+                addressId, body.path("requestId").textValue());
+        return ApiResponse.success(result.response(false), null);
     }
 
-    private void warmIfCold(long sessionId, long skuId) {
-        String status = jdbc.queryForObject("SELECT warm_status FROM marketing_seckill_item WHERE session_id=? AND sku_id=?", String.class, sessionId, skuId);
-        if (!"HOT".equals(status)) warm(sessionId, skuId);
-    }
-
-    private Map<String, Object> item(long sessionId, long skuId) {
-        var rows = jdbc.queryForList(
-                "SELECT i.price,i.limit_per_user,i.stock_qty,s.start_at,s.end_at FROM marketing_seckill_item i JOIN marketing_seckill_session s ON s.id=i.session_id WHERE i.session_id=? AND i.sku_id=? AND i.status='ENABLED' AND s.status='ENABLED' AND s.start_at<=CURRENT_TIMESTAMP AND s.end_at>CURRENT_TIMESTAMP",
-                sessionId, skuId);
-        if (rows.isEmpty()) throw new BusinessException("MK40401", "秒杀商品或场次不可用");
-        return rows.getFirst();
+    private static boolean validLong(JsonNode node) {
+        return node.isIntegralNumber() && node.canConvertToLong();
     }
 
     private void require(String key) {

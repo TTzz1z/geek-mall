@@ -9,6 +9,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -21,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 
 @Component
 public class ModelGateway {
@@ -37,6 +40,12 @@ public class ModelGateway {
     private final String llmApiKey;
     private final String llmModel;
     private final int llmTimeoutMs;
+    @Value("${geek.llm.header-timeout-ms:15000}") private int headerTimeoutMs=15000;
+    @Value("${geek.llm.first-byte-timeout-ms:15000}") private int firstByteTimeoutMs=15000;
+    @Value("${geek.llm.body-idle-timeout-ms:15000}") private int bodyIdleTimeoutMs=15000;
+    @Value("${geek.llm.total-timeout-ms:60000}") private int totalTimeoutMs=60000;
+    @Value("${geek.llm.max-output-tokens:2048}") private int maxOutputTokens=2048;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private AiTurnTelemetry telemetry;
 
     public ModelGateway(JdbcTemplate jdbc,
                         ObjectMapper mapper,
@@ -70,6 +79,98 @@ public class ModelGateway {
         return complete("ANSWER", systemPrompt, userPrompt, conversationId, 0.3);
     }
 
+    CompletionResult completeAnswer(String systemPrompt, String userPrompt, Long conversationId, AnswerStreamGuard output) {
+        var result = completeAnswer(systemPrompt, userPrompt, conversationId);
+        if (result.degraded()) return result;
+        try {
+            output.accept(result.text());
+            output.finish();
+            return result;
+        } catch (IllegalArgumentException unsafe) {
+            return new CompletionResult(result.modelName(), localComplete(), result.promptTokens(),
+                    result.completionTokens(), result.tokenUsageEstimated(), true);
+        }
+    }
+
+    CompletionResult streamAnswer(String systemPrompt, String userPrompt, Long conversationId,
+                                  AnswerStreamGuard output, TurnCancellation cancellation) {
+        if (!remoteConfigured() || failPrimary) return completeAnswer(systemPrompt, userPrompt, conversationId);
+        long started = System.currentTimeMillis();
+        long startedNanos=System.nanoTime();
+        String requestId = UUID.randomUUID().toString();
+        try {
+            var messages = List.of(Map.of("role", "system", "content", systemPrompt),
+                    Map.of("role", "user", "content", userPrompt));
+            var body = Map.of("model", llmModel, "messages", messages, "temperature", 0.3,"max_tokens", Math.max(64,Math.min(8192,maxOutputTokens)),
+                    "stream", true, "stream_options", Map.of("include_usage", true));
+            var request = HttpRequest.newBuilder(chatEndpoint())
+                    .timeout(Duration.ofMillis(Math.max(1,Math.min(headerTimeoutMs,totalTimeoutMs)))).header("Authorization", "Bearer " + llmApiKey)
+                    .header("Content-Type", "application/json").header("Accept", "text/event-stream")
+                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build();
+            var response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            var responseBody = response.body();
+            try (var input = new DeadlineInputStream(responseBody,startedNanos,firstByteTimeoutMs,bodyIdleTimeoutMs,totalTimeoutMs);
+                 var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+                cancellation.attach(responseBody);
+                if (response.statusCode() != 200) throw new IllegalStateException("upstream rejected stream");
+                var answer = new StringBuilder();
+                JsonNode providerUsage = null;
+                boolean finished = false;
+                boolean firstDelta=true;
+                for (String line; (line = readEventLine(reader)) != null;) {
+                    cancellation.check();
+                    if (!line.startsWith("data:")) continue;
+                    String data = line.substring(5).strip();
+                    if ("[DONE]".equals(data)) {
+                        finished = true;
+                        break;
+                    }
+                    JsonNode event = mapper.readTree(data);
+                    if (event.hasNonNull("usage")) providerUsage = event.path("usage");
+                    String delta = event.path("choices").path(0).path("delta").path("content").asText("");
+                    if (!delta.isEmpty()) {
+                        if(firstDelta) { firstDelta=false; if(telemetry!=null) telemetry.duration("first.delta",System.nanoTime()-startedNanos); }
+                        if (answer.length() + delta.length() > 32_000) throw new IllegalStateException("upstream answer too long");
+                        answer.append(delta);
+                        output.accept(delta);
+                    }
+                }
+                cancellation.check();
+                if (!finished || answer.isEmpty()) throw new IllegalStateException("incomplete upstream stream");
+                output.finish();
+                String text = answer.toString();
+                var remote = providerUsage == null ? null : new RemoteCompletion(text, providerUsage.path("prompt_tokens").asInt(),
+                        providerUsage.path("completion_tokens").asInt(), providerUsage.has("prompt_tokens") && providerUsage.has("completion_tokens"));
+                var usage = tokenUsage(systemPrompt, userPrompt, text, remote);
+                log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - started), usage.promptTokens(),
+                        usage.completionTokens(), usage.estimated(), "SUCCESS", "scene=ANSWER;stream");
+                return new CompletionResult(primary, text, usage.promptTokens(), usage.completionTokens(), usage.estimated(), false);
+            } finally {
+                cancellation.detach(responseBody);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException();
+        } catch (Exception e) {
+            cancellation.check();
+            if (e instanceof CancellationException cancelled) throw cancelled;
+            recordTimeout(e);
+            log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - started),
+                    estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED", "scene=ANSWER;stream");
+            return new CompletionResult(fallback, localComplete(), estimateTokens(systemPrompt + userPrompt), 0, true, true);
+        }
+    }
+
+    private static String readEventLine(BufferedReader reader) throws java.io.IOException {
+        var line = new StringBuilder();
+        for (int ch; (ch = reader.read()) != -1;) {
+            if (ch == '\n') return line.toString();
+            if (line.length() >= 65_536) throw new java.io.IOException("upstream event too long");
+            line.append((char) ch);
+        }
+        return line.isEmpty() ? null : line.toString();
+    }
+
     public CompletionResult complete(String scene, String systemPrompt, String userPrompt,
                                      Long conversationId, double temperature) {
         long start = System.currentTimeMillis();
@@ -82,7 +183,7 @@ public class ModelGateway {
             RemoteCompletion remote = null;
             String text;
             if (!remoteConfigured()) {
-                text = localComplete(systemPrompt, userPrompt);
+                text = localComplete();
             } else {
                 remote = openAiCompatibleChat(systemPrompt, userPrompt, temperature, llmTimeoutMs, false);
                 text = remote.text();
@@ -93,12 +194,13 @@ public class ModelGateway {
                     remoteConfigured() ? ("scene=" + scene) : "local");
             return new CompletionResult(model, text, usage.promptTokens(), usage.completionTokens(), usage.estimated(), !remoteConfigured());
         } catch (Exception primaryError) {
+            recordTimeout(primaryError);
             model = fallback;
-            String text = localComplete(systemPrompt, userPrompt) + "\n\n（已降级至 " + fallback + "）";
+            String text = localComplete();
             int promptTokens = estimateTokens(systemPrompt + userPrompt);
             int completionTokens = estimateTokens(text);
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
-                    promptTokens, 0, true, "FAILED", "scene=" + scene + ";" + primaryError.getMessage());
+                    promptTokens, 0, true, "FAILED", "scene=" + scene + ";" + primaryError.getClass().getSimpleName());
             log(requestId + "-fb", conversationId, model, (int) (System.currentTimeMillis() - start),
                     promptTokens, completionTokens, true, "SUCCESS", "scene=" + scene + ";fallback");
             return new CompletionResult(model, text, promptTokens, completionTokens, true, true);
@@ -127,9 +229,10 @@ public class ModelGateway {
                     usage.promptTokens(), usage.completionTokens(), usage.estimated(), "SUCCESS", "scene=" + scene);
             return new CompletionResult(primary, remote.text(), usage.promptTokens(), usage.completionTokens(), usage.estimated(), false);
         } catch (Exception ex) {
+            recordTimeout(ex);
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
                     estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED",
-                    "scene=" + scene + ";" + (ex.getMessage() == null ? "planner-failed" : ex.getMessage()));
+                    "scene=" + scene + ";" + ex.getClass().getSimpleName());
             throw ex;
         }
     }
@@ -145,30 +248,39 @@ public class ModelGateway {
         body.put("model", llmModel);
         body.put("messages", messages);
         body.put("temperature", temperature);
+        body.put("max_tokens",Math.max(64,Math.min(8192,maxOutputTokens)));
         if (jsonObject) {
             body.put("response_format", Map.of("type", "json_object"));
         }
 
         byte[] payload = mapper.writeValueAsBytes(body);
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(llmBaseUrl + "/v1/chat/completions"))
-                .timeout(Duration.ofMillis(Math.max(3000, timeoutMs)))
+                .uri(chatEndpoint())
+                .timeout(Duration.ofMillis(Math.max(1,Math.min(timeoutMs,Math.min(headerTimeoutMs,totalTimeoutMs)))))
                 .header("Authorization", "Bearer " + llmApiKey)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofByteArray(payload))
                 .build();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        long startedNanos=System.nanoTime();
+        var response = http.send(request,HttpResponse.BodyHandlers.ofInputStream());
+        String responseText;
+        try (var input=new DeadlineInputStream(response.body(),startedNanos,firstByteTimeoutMs,bodyIdleTimeoutMs,
+                Math.min(timeoutMs,totalTimeoutMs))) {
+            byte[] bytes=input.readNBytes(512_001);
+            if(bytes.length>512_000) throw new java.io.IOException("upstream response too long");
+            responseText=new String(bytes,StandardCharsets.UTF_8);
+        }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             // Some providers reject response_format — retry once without it for planner.
             if (jsonObject && response.statusCode() == 400) {
                 return openAiCompatibleChat(systemPrompt, userPrompt, temperature, timeoutMs, false);
             }
-            throw new IllegalStateException("LLM HTTP " + response.statusCode() + ": " + truncate(response.body()));
+            throw new IllegalStateException("LLM HTTP " + response.statusCode());
         }
-        JsonNode root = mapper.readTree(response.body());
+        JsonNode root = mapper.readTree(responseText);
         JsonNode content = root.path("choices").path(0).path("message").path("content");
         if (content.isMissingNode() || content.asText().isBlank()) {
-            throw new IllegalStateException("LLM empty content: " + truncate(response.body()));
+            throw new IllegalStateException("LLM empty content");
         }
         JsonNode usage = root.path("usage");
         boolean hasUsage = usage.isObject() && usage.has("prompt_tokens") && usage.has("completion_tokens");
@@ -176,8 +288,18 @@ public class ModelGateway {
                 usage.path("completion_tokens").asInt(), hasUsage);
     }
 
-    private String localComplete(String systemPrompt, String userPrompt) {
-        return "[模型回复·本地降级]\n" + (userPrompt == null ? "" : userPrompt);
+    private String localComplete() {
+        return "模型暂时不可用，请稍后重试。";
+    }
+
+    private void recordTimeout(Exception error) {
+        if (telemetry == null) return;
+        if (error instanceof DeadlineInputStream.BodyTimeoutException timeout) telemetry.timeout(timeout.phase);
+        else if (error instanceof java.net.http.HttpTimeoutException) telemetry.timeout("headers");
+    }
+
+    private URI chatEndpoint() {
+        return URI.create(llmBaseUrl + (llmBaseUrl.endsWith("/v1") ? "" : "/v1") + "/chat/completions");
     }
 
     private void log(String requestId, Long conversationId, String model, int latency,
@@ -206,11 +328,6 @@ public class ModelGateway {
     private static String trimSlash(String url) {
         if (url == null || url.isBlank()) return "https://api.deepseek.com";
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
-    }
-
-    private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() <= 400 ? s : s.substring(0, 400);
     }
 
     private record RemoteCompletion(String text, int promptTokens, int completionTokens, boolean hasUsage) {}

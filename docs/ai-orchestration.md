@@ -10,7 +10,7 @@ AI 服务用于把自然语言需求转换为受控的查询、对比、加购�
 
 - 代替用户提交订单、支付或正式退款；
 - 任意 SQL、直接改库存或绕过业务服务；
-- 真实 OCR/VL、Embedding 或 Milvus 向量召回；
+- 视觉语言模型对文档图片的理解；
 - 对外部模型的可用性、答案质量或账单金额作保证。
 
 ## 当前链路
@@ -21,11 +21,12 @@ AI 服务用于把自然语言需求转换为受控的查询、对比、加购�
   -> PlannerGateway（可选远程 LLM）
        -> PlanValidator（schema、预算、风险、ID 来源）
        -> 失败时 AgentRouter 规则计划
-  -> ToolPolicy + ToolExecutor（白名单业务工具）
+  -> ToolPolicy + ToolExecutor（JSON Schema、权限、业务工具）
        -> 空搜索最多一次 EmptySearchReplanner
+       -> ToolApprovalService（待审批草稿）
   -> grounded 草稿
-       -> 可选 ModelGateway 终答
-       -> AnswerGrounding 校验，失败回退草稿
+       -> ModelGateway 上游 SSE
+       -> 校验自然文本片段，失败时回退草稿
   -> SSE 事件与 message.complete
 ```
 
@@ -37,7 +38,8 @@ AI 服务用于把自然语言需求转换为受控的查询、对比、加购�
 | `PlannerGateway` / `ModelGateway` | 调用 OpenAI-compatible 模型；不可用时返回可识别的降级状态 |
 | `PlanEnvelope` / `PlanValidator` | 表达并校验计划，限制步骤数、预算和参数来源 |
 | `AgentRouter` | 无远程计划时的确定性规则 fallback |
-| `ToolPolicy` / `ToolExecutor` | 提供工具白名单、风险等级和实际业务 API 调用 |
+| `ToolPolicy` / `ToolExecutor` | 校验 JSON Schema、权限和风险等级，再调用业务 API |
+| `ToolApprovalService` | 验证会话归属，持久化审批与过期状态，由后台任务幂等执行已确认草稿 |
 | `ConversationSlots` / `ContextPacker` | 保存上一轮搜索结果等 slots，并压缩近期上下文 |
 | `EmptySearchReplanner` | 空搜索时最多重规划一次；硬预算不放宽 |
 | `AnswerGrounding` | 阻止终答引用工具结果之外的商品或标识 |
@@ -57,22 +59,26 @@ AI 服务用于把自然语言需求转换为受控的查询、对比、加购�
 
 当前白名单以 `ToolPolicy` 为准。查询、比较和低风险草稿可执行；支付、提交订单、正式退款等 L4 动作由代码拒绝，不能通过 prompt 覆盖。
 
+需确认的工具先进入 `PENDING`。所属用户确认后，工作器从 `CONFIRMED` 恢复执行，草稿写入与审批完成在同一个本地事务中提交。未确认的请求过期后持久化为 `EXPIRED`。
+
 ## Grounding 与 RAG 真实性
 
-知识检索使用数据库中的知识片段和 64 维确定性字符哈希原型进行本地相似度演示。它不是 Embedding 模型，也不代表语义向量检索的生产实现。
+知识文件从配置的 MinIO 文档桶读取，由 Tika 提取 PDF、DOCX、XLSX 正文和图片 OCR 文本。解析成功后保存文档来源、版本和知识范围，异步同步 Elasticsearch 索引。
 
-`MILVUS_ENABLED` 只是预留配置；仓库没有 Milvus 健康探测、collection/schema 管理、真实向量写入或召回链路。证据低于阈值时，回答应返回空 citation 并提示没有足够证据，不能生成参数型结论。
+Elasticsearch 按 `PRODUCT` 或 `RULE` 过滤 BM25 与向量召回。配置 `EMBEDDING_URL` 后，Java 侧用 RRF 融合两路结果，所有候选还须通过语义相似度准入，再复核数据库范围、状态和激活版本。默认模型为 BGE-M3，阈值 0.62；embedding 故障返回空证据。未配置向量服务时保留 BM25 兼容模式；设 `KNOWLEDGE_REQUIRE_SEMANTIC_GATE=true` 可要求缺失后端也返回空证据。本次冻结 TEST 的无答案候选误召回率仍为 33.3%，尚未达到暂定 20% 门槛，不能将兼容模式或当前实验称为质量全面通过。实验结果见 [检索评测说明](../backend/geek-ai/src/main/resources/eval/retrieval-v2.md)。
 
-商品卡和商品标识只信任工具结果。若可选 LLM 终答包含未 grounding 的商品，`AnswerGrounding` 会回退到确定性草稿。
+商品卡、价格和库存使用业务工具结果。自然文本流经 `AnswerStreamGuard` 校验再发送，校验失败时替换成已基于业务证据生成的草稿。
 
 ## API 与事件
 
-对话入口由 `AiController` 提供，前端通过 Gateway 的 `/api/v1/ai/**` 访问。单轮执行会产生用于观察编排过程的 SSE/事件数据，当前代码包含：
+前端通过 Gateway 调用 `POST /api/v1/ai/conversations/{conversationNo}/stream`，通过 `DELETE /api/v1/ai/conversations/{conversationNo}/turns/{turnId}` 取消当前用户的上游请求。主要 SSE 事件如下。
 
 - `plan.created`：计划已创建；
 - `plan.fallback`：远程计划不可用，使用规则计划；
 - `plan.replan`：空结果触发一次受限重规划；
 - `tool.result`：工具执行结果；
+- `message.delta`：已校验的上游文本片段；
+- `message.reset`：用降级结果替换已显示的增量；
 - `message.complete`：本轮完成，包含 planner mode 等摘要。
 
 调用方必须容忍新增事件字段，并以 `message.complete` 作为终态；具体字段以 `AiController` 和 `OrchestratorService` 当前返回为准。
@@ -80,6 +86,8 @@ AI 服务用于把自然语言需求转换为受控的查询、对比、加购�
 ## 配置与观测
 
 配置集中在 `backend/geek-ai/src/main/resources/application.yml` 与 `.env.example`。关键开关包括 Planner/Replan、超时、最大步骤、plan cache、并发上限和可选 LLM endpoint/key。
+
+流式线程池限制工作线程与排队容量，饱和时返回 503。观测配置可向 Jaeger 导出 Agent Turn 及 Planner、Tool、RAG、Answer 各阶段的 span，并向 Prometheus 暴露阶段耗时。Trace 记录阶段和运行结果，用户文本和内部 Prompt 留在业务调用内。
 
 模型返回 OpenAI-compatible `usage` 时记录上游 Token；缺失时标记为估算。管理端展示的成本始终是本地估算，不是供应商账单。调用日志通过 Flyway 迁移保存 provenance 和真实/估算标记。
 
@@ -100,8 +108,7 @@ AI 服务用于把自然语言需求转换为受控的查询、对比、加购�
 
 ## 技术债
 
-- 用真实 Embedding 和向量库替换字符哈希原型，并补齐迁移、回填和召回评测；
-- 建立版本化的 AI 评测集、质量阈值和持续回归，而不是依赖历史手工 PASS；
+- 扩大现有标注查询集并为持续评测建立质量阈值；
 - 对远程模型增加更完整的超时、限流、熔断、数据脱敏与供应商故障演练；
 - 为 SSE 契约建立机器可校验的 schema 和兼容策略；
 - 将估算成本与供应商账单对账后再用于财务判断。

@@ -87,6 +87,26 @@ function Find-CartItemId($cartJson, [long]$skuId) {
   return $null
 }
 
+function Wait-Aftersale([string]$no, [string]$status) {
+  for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    $current = Invoke-Api 'GET' "/api/v1/aftersales/$no" $token $null $null
+    if ($current.json.data.status -eq $status) { return $true }
+    Start-Sleep -Seconds 1
+  }
+  return $false
+}
+
+function Wait-Fulfillment([string]$no) {
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    $list = Invoke-Api 'GET' '/api/v1/merchant/fulfillments' $mtoken $null $null
+    foreach ($f in @($list.json.data)) {
+      if ($f.orderNo -eq $no) { return $f.fulfillmentNo }
+    }
+    Start-Sleep -Seconds 1
+  }
+  return $null
+}
+
 function Snip([string]$text, [int]$n = 180) {
   if (-not $text) { return '' }
   if ($text.Length -le $n) { return $text }
@@ -97,11 +117,20 @@ Log '== Phase1 seed prepare (shopper user_id=4) =='
 [void](Sql 'geek_member' "INSERT INTO member_profile(user_id,level_code,growth_value,point_balance,frozen_points,updated_at) VALUES (4,'GOLD',2500,5000,0,CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE level_code='GOLD',point_balance=5000,frozen_points=0,updated_at=CURRENT_TIMESTAMP;")
 [void](Sql 'geek_member' "INSERT INTO member_user_address(id,user_id,receiver,mobile,region_code,region_name,detail,is_default,created_at,updated_at) VALUES (81004,4,'Geek User','13800000001','310000','Shanghai','Jiading Geek Rd 88',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE user_id=4,is_default=1,detail=VALUES(detail),updated_at=CURRENT_TIMESTAMP;")
 [void](Sql 'geek_marketing' "INSERT INTO marketing_user_coupon(id,template_id,user_id,status,received_at) VALUES (71104,71001,4,'UNUSED',CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE status='UNUSED',user_id=4;")
-[void](Sql 'geek_marketing' "DELETE FROM marketing_seckill_order WHERE user_id=4;")
-[void](Sql 'geek_marketing' "UPDATE marketing_seckill_item SET warm_status='COLD',stock_qty=50 WHERE session_id=72001 AND sku_id=11001;")
+$fixtureReset = Sql 'geek_marketing' "START TRANSACTION;
+SET @fixture_reserved=NULL;
+SELECT reserved_qty INTO @fixture_reserved FROM marketing_seckill_item WHERE session_id=72001 AND sku_id=11001 FOR UPDATE;
+SET @fixture_hold=(SELECT COALESCE(SUM(quantity),0) FROM marketing_seckill_order WHERE session_id=72001 AND sku_id=11001 AND user_id=4 AND status IN ('QUEUED','CREATED','TIMEOUT'));
+SET @fixture_safe=COALESCE(@fixture_reserved>=@fixture_hold,0);
+UPDATE marketing_seckill_item
+SET reserved_qty=reserved_qty-@fixture_hold,
+    warm_status='COLD', stock_qty=GREATEST(50,@fixture_reserved-@fixture_hold+1)
+WHERE session_id=72001 AND sku_id=11001 AND @fixture_safe=1;
+DELETE FROM marketing_seckill_order WHERE session_id=72001 AND sku_id=11001 AND user_id=4 AND @fixture_safe=1;
+COMMIT;
+SELECT @fixture_safe;"
+if ($LASTEXITCODE -ne 0 -or "$fixtureReset".Trim() -ne '1') { throw 'Failed to reset seckill fixture transaction.' }
 [void](Sql 'geek_trade' "UPDATE trade_order SET checkout_token=CONCAT('SECKILL-LEGACY-',order_no) WHERE checkout_token='SECKILL';")
-[void](docker exec geek-mall-redis-1 redis-cli SET seckill:stock:72001:11001 50)
-[void](docker exec geek-mall-redis-1 redis-cli DEL seckill:user:72001:11001:4)
 
 $login = Invoke-Api 'POST' '/api/v1/auth/login/password' $null @{ username = 'shopper'; password = 'Geek@123' } $null
 $token = [string]$login.json.data.accessToken
@@ -183,10 +212,8 @@ Pass 'order_paid' ($detail.json.data.status -eq 'PAID') ("status=$($detail.json.
 $mlogin = Invoke-Api 'POST' '/api/v1/auth/login/password' $null @{ username = 'merchant_a'; password = 'Geek@123' } $null
 $mtoken = [string]$mlogin.json.data.accessToken
 
-$ff = Invoke-Api 'GET' '/api/v1/merchant/fulfillments' $mtoken $null $null
-$fulfillmentNo = $null
-foreach ($f in @($ff.json.data)) { if ($f.orderNo -eq $orderNo) { $fulfillmentNo = $f.fulfillmentNo } }
-Pass 'fulfillment_created' ($null -ne $fulfillmentNo) ("fulfillmentNo=$fulfillmentNo listCode=$($ff.code)")
+$fulfillmentNo = Wait-Fulfillment $orderNo
+Pass 'fulfillment_created' ($null -ne $fulfillmentNo) ("fulfillmentNo=$fulfillmentNo")
 
 $ffDetail = Invoke-Api 'GET' ("/api/v1/merchant/fulfillments/$fulfillmentNo") $mtoken $null $null
 $shipLineItemId = Format-LongId (@($ffDetail.json.data.items)[0].orderItemId)
@@ -212,7 +239,7 @@ if ($pkg.json.data -and $pkg.json.data.tracks) { $trackCount = @($pkg.json.data.
 Pass 'logistics_tracks' ($pkg.code -eq 200 -and $trackCount -ge 1) ("packageNo=$packageNo tracks=$trackCount")
 
 # ---- 2) Seckill ----
-Log '== 2) Seckill: Lua -> MQ -> order -> pay -> ship =='
+Log '== 2) Seckill: reservation -> MQ -> order -> pay -> ship =='
 $sk = Invoke-Api 'POST' '/api/v1/marketing/seckill/11001/orders' $token @{
   sessionId = 72001
   quantity = 1
@@ -243,10 +270,7 @@ if ($skOrderNo) {
   $skPaymentNo = [string]$skPay.json.data.paymentNo
   $skSim = Invoke-Api 'POST' ("/api/v1/payments/$skPaymentNo/simulate") $token @{} $null
   Pass 'seckill_pay' ($skPay.code -eq 200 -and $skSim.code -eq 200) ("paymentNo=$skPaymentNo")
-  Start-Sleep -Seconds 2
-  $skFf = Invoke-Api 'GET' '/api/v1/merchant/fulfillments' $mtoken $null $null
-  $skFNo = $null
-  foreach ($f in @($skFf.json.data)) { if ($f.orderNo -eq $skOrderNo) { $skFNo = $f.fulfillmentNo } }
+  $skFNo = Wait-Fulfillment $skOrderNo
   if ($skFNo) {
     $skFd = Invoke-Api 'GET' ("/api/v1/merchant/fulfillments/$skFNo") $mtoken $null $null
     $skItemId = Format-LongId (@($skFd.json.data.items)[0].orderItemId)
@@ -284,7 +308,7 @@ Pass 'apply_refund_only' ($as1.code -eq 200 -and $as1No) ("aftersaleNo=$as1No")
 
 $ap1 = Invoke-Api 'POST' ("/api/v1/merchant/aftersales/$as1No/approve?amount=$half") $mtoken $null $null
 Log ("approve REFUND_ONLY => $($ap1.code) status=$($ap1.json.data.status)")
-Pass 'approve_refund_only' ($ap1.code -eq 200 -and $ap1.json.data.status -eq 'COMPLETED') ("status=$($ap1.json.data.status)")
+Pass 'approve_refund_only' ($ap1.code -eq 200 -and (Wait-Aftersale $as1No 'COMPLETED')) ("approvalStatus=$($ap1.json.data.status)")
 $rf1 = Sql 'geek_trade' "SELECT refund_no,amount,status FROM trade_refund WHERE aftersale_id='$as1No';"
 Pass 'refund_row_refund_only' ("$rf1" -match 'SUCCESS') ("row=$rf1")
 
@@ -332,7 +356,7 @@ $rl = Invoke-Api 'POST' ("/api/v1/aftersales/$as2No/return-logistics?trackingNo=
 Pass 'user_return_logistics' ($rl.code -eq 200 -and $rl.json.data.status -eq 'RETURNING') ("status=$($rl.json.data.status)")
 
 $recv1 = Invoke-Api 'POST' ("/api/v1/merchant/aftersales/$as2No/receive") $mtoken $null $null
-Pass 'warehouse_receive_refund' ($recv1.code -eq 200 -and $recv1.json.data.status -eq 'COMPLETED') ("status=$($recv1.json.data.status)")
+Pass 'warehouse_receive_refund' ($recv1.code -eq 200 -and (Wait-Aftersale $as2No 'COMPLETED')) ("receiveStatus=$($recv1.json.data.status)")
 $recv2 = Invoke-Api 'POST' ("/api/v1/merchant/aftersales/$as2No/receive") $mtoken $null $null
 Pass 'warehouse_receive_idempotent' ($recv2.code -eq 200) ("status=$($recv2.json.data.status)")
 $rf2 = Sql 'geek_trade' "SELECT refund_no,amount,status FROM trade_refund WHERE aftersale_id='$as2No';"
@@ -377,6 +401,7 @@ $as3a = Invoke-Api 'POST' '/api/v1/aftersales' $token @{
   amount = $a60
 } $null
 [void](Invoke-Api 'POST' ("/api/v1/merchant/aftersales/$($as3a.json.data.aftersaleNo)/approve?amount=$a60") $mtoken $null $null)
+Pass 'partial_refund_first_completed' (Wait-Aftersale $as3a.json.data.aftersaleNo 'COMPLETED') ("aftersaleNo=$($as3a.json.data.aftersaleNo)")
 $as3b = Invoke-Api 'POST' '/api/v1/aftersales' $token @{
   orderNo = $orderNo3
   orderItemId = [long]$item3.id
@@ -392,7 +417,7 @@ if ($as3b.code -eq 200 -and $as3b.json.data.aftersaleNo) {
   $overApprove = Invoke-Api 'POST' ("/api/v1/merchant/aftersales/$($as3b.json.data.aftersaleNo)/approve?amount=$a60") $mtoken $null $null
   $overCode = "$($overApprove.code)/$($overApprove.json.code)"
 }
-$blocked = ($as3b.code -ge 400) -or ($overApprove -and (($overApprove.code -ge 400) -or ($overApprove.json.code -ne '0')))
+$blocked = ($as3b.code -ge 400) -or ($overApprove -and (($overApprove.code -ge 400) -or ($overApprove.json.code -ne '0') -or (Wait-Aftersale $as3b.json.data.aftersaleNo 'REJECTED')))
 Pass 'partial_refund_ceiling' $blocked ("first=60% secondBlocked=$blocked as3b=$($as3b.code) over=$overCode")
 
 # ---- 7) Snapshot ----

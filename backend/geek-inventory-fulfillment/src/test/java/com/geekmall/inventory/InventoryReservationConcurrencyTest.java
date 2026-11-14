@@ -21,11 +21,45 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class InventoryReservationConcurrencyTest {
+    @Test void inconsistentReleaseRollsBackReservationAndCloseFence() {
+        var ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:inventory_bad_release;MODE=MySQL;DB_CLOSE_DELAY=-1");
+        var jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE inventory_reservation_lock(order_id BIGINT PRIMARY KEY,closed BOOLEAN DEFAULT FALSE NOT NULL)");
+        jdbc.execute("CREATE TABLE inventory_stock_reservation(id BIGINT PRIMARY KEY,order_no VARCHAR(64),merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,quantity INT,status VARCHAR(32),updated_at TIMESTAMP)");
+        jdbc.execute("CREATE TABLE inventory_sku_stock(merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,locked_qty INT,version INT,updated_at TIMESTAMP)");
+        jdbc.update("INSERT INTO inventory_stock_reservation VALUES(1,'GM-BAD',2,3,4,5,'RESERVED',CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO inventory_sku_stock VALUES(2,3,4,0,0,CURRENT_TIMESTAMP)");
+        var service = new InventoryService(jdbc, new ObjectMapper());
+        var tx = new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(ds));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> tx.execute(s -> service.release("GM-BAD", 1)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("释放");
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory_stock_reservation", String.class)).isEqualTo("RESERVED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_reservation_lock", Integer.class)).isZero();
+    }
+    @Test
+    void releaseBeforeDelayedReservationPermanentlyClosesOrder() {
+        JdbcDataSource ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:inventory_close;MODE=MySQL;DB_CLOSE_DELAY=-1");
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE inventory_reservation_lock(order_id BIGINT PRIMARY KEY,closed BOOLEAN NOT NULL DEFAULT FALSE)");
+        jdbc.execute("CREATE TABLE inventory_stock_reservation(id BIGINT,order_no VARCHAR(64),merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,quantity INT,status VARCHAR(32))");
+        InventoryService service = new InventoryService(jdbc, new ObjectMapper());
+        service.release("SK-CLOSED", 19);
+        service.release("SK-CLOSED", 19);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.reserve(new InventoryController.ReservationRequest(
+                19L, "SK-CLOSED", "310000", Instant.now().plusSeconds(600),
+                List.of(new InventoryController.ReservationItem(2001L, 3001L, 11001L, 1)))))
+                .isInstanceOf(BusinessException.class).hasMessage("订单库存预占已关闭");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_stock_reservation", Integer.class)).isZero();
+    }
+
     @Test
     void concurrentReservationsNeverExceedAvailableStock() throws Exception {
         JdbcDataSource ds = new JdbcDataSource();
         ds.setURL("jdbc:h2:mem:inventory_concurrency;MODE=MySQL;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE inventory_reservation_lock(order_id BIGINT PRIMARY KEY,closed BOOLEAN NOT NULL DEFAULT FALSE)");
         jdbc.execute("CREATE TABLE inventory_warehouse(id BIGINT PRIMARY KEY,warehouse_code VARCHAR(32),warehouse_name VARCHAR(128),region_code VARCHAR(32),priority INT,status VARCHAR(32))");
         jdbc.execute("CREATE TABLE inventory_sku_stock(id BIGINT PRIMARY KEY,merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,physical_qty INT,locked_qty INT,defective_qty INT,version INT,updated_at TIMESTAMP)");
         jdbc.execute("CREATE TABLE inventory_stock_reservation(id BIGINT PRIMARY KEY,reservation_no VARCHAR(64),order_id BIGINT,order_no VARCHAR(64),merchant_id BIGINT,warehouse_id BIGINT,sku_id BIGINT,quantity INT,status VARCHAR(32),expires_at TIMESTAMP,created_at TIMESTAMP,updated_at TIMESTAMP,UNIQUE(order_id,warehouse_id,sku_id))");

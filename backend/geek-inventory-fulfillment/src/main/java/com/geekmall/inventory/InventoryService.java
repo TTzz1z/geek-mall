@@ -101,6 +101,13 @@ class InventoryService {
 
     @Transactional
     Map<String, Object> reserve(InventoryController.ReservationRequest request) {
+        jdbc.update("""
+                INSERT INTO inventory_reservation_lock(order_id) VALUES(?)
+                ON DUPLICATE KEY UPDATE order_id=order_id
+                """, request.orderId());
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT closed FROM inventory_reservation_lock WHERE order_id=?", Boolean.class, request.orderId()))) {
+            throw new BusinessException("IV40905", "订单库存预占已关闭");
+        }
         List<Map<String, Object>> existing = reservations(request.orderNo());
         if (!existing.isEmpty()) return Map.of("orderNo", request.orderNo(), "reservationNo", "RS" + request.orderId(), "idempotentReplay", true, "allocations", existing);
 
@@ -143,12 +150,22 @@ class InventoryService {
             int changed = jdbc.update("UPDATE inventory_stock_reservation SET status='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='RESERVED'", row.get("id"));
             if (changed == 0) continue;
             int quantity = number(row.get("quantity"));
-            jdbc.update("UPDATE inventory_sku_stock SET locked_qty=locked_qty-?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE warehouse_id=? AND sku_id=? AND merchant_id=? AND locked_qty>=?", quantity, row.get("warehouse_id"), row.get("sku_id"), row.get("merchant_id"), quantity);
+            int stockChanged = jdbc.update("UPDATE inventory_sku_stock SET locked_qty=locked_qty-?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE warehouse_id=? AND sku_id=? AND merchant_id=? AND locked_qty>=?", quantity, row.get("warehouse_id"), row.get("sku_id"), row.get("merchant_id"), quantity);
+            if (stockChanged != 1) throw new BusinessException("IV40906", "预占库存释放状态异常");
             stockLog(((Number) row.get("merchant_id")).longValue(), ((Number) row.get("warehouse_id")).longValue(), ((Number) row.get("sku_id")).longValue(), "RELEASE", orderNo, 0, -quantity);
             affected++;
         }
         if (affected > 0) event(orderNo, "inventory.stock.released.v1", Map.of("orderNo", orderNo));
         return Map.of("orderNo", orderNo, "released", affected, "idempotentReplay", affected == 0);
+    }
+
+    @Transactional
+    Map<String, Object> release(String orderNo, long orderId) {
+        jdbc.update("""
+                INSERT INTO inventory_reservation_lock(order_id,closed) VALUES(?,TRUE)
+                ON DUPLICATE KEY UPDATE closed=TRUE
+                """, orderId);
+        return release(orderNo);
     }
 
     @Transactional
@@ -162,6 +179,14 @@ class InventoryService {
             if (stockChanged == 0) throw new BusinessException("IV40903", "预占库存扣减状态异常");
             stockLog(((Number) row.get("merchant_id")).longValue(), ((Number) row.get("warehouse_id")).longValue(), ((Number) row.get("sku_id")).longValue(), "DEDUCT", orderNo, -quantity, -quantity);
             affected++;
+        }
+        if (affected == 0) {
+            var rows = jdbc.queryForList("""
+                    SELECT status FROM inventory_stock_reservation WHERE order_no=? FOR UPDATE
+                    """, String.class, orderNo);
+            if (rows.isEmpty() || rows.stream().anyMatch(status -> !"DEDUCTED".equals(status))) {
+                throw new BusinessException("IV40904", "没有可扣减的有效库存预占");
+            }
         }
         return Map.of("orderNo", orderNo, "deducted", affected, "idempotentReplay", affected == 0);
     }

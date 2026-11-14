@@ -21,6 +21,12 @@ public final class ServiceJwtFilter extends OncePerRequestFilter {
     public ServiceJwtFilter(JwtService jwtService) { this.jwtService = jwtService; }
 
     @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        // Stateless SSE completion runs on a new servlet thread and needs its own authentication.
+        return false;
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String authorization = request.getHeader("Authorization");

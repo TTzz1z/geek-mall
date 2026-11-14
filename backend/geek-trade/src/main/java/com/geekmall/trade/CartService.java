@@ -6,7 +6,9 @@ import com.geekmall.common.api.BusinessException;
 import com.geekmall.common.domain.DistributedId;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -16,12 +18,20 @@ import java.util.stream.Collectors;
 @Service
 class CartService {
     private final JdbcTemplate jdbc; private final ProductSnapshotClient products; private final InventoryClient inventory; private final ObjectMapper mapper;
-    CartService(JdbcTemplate jdbc,ProductSnapshotClient products,InventoryClient inventory,ObjectMapper mapper){this.jdbc=jdbc;this.products=products;this.inventory=inventory;this.mapper=mapper;}
+    private final TransactionTemplate transactions;
+    CartService(JdbcTemplate jdbc,ProductSnapshotClient products,InventoryClient inventory,ObjectMapper mapper){this.jdbc=jdbc;this.products=products;this.inventory=inventory;this.mapper=mapper;this.transactions=new TransactionTemplate(new DataSourceTransactionManager(Objects.requireNonNull(jdbc.getDataSource())));}
 
-    @Transactional
     void add(long userId,CartController.AddItem body){
         SkuSnapshot sku=requireSaleable(body.skuId());
-        int available=inventory.availability(List.of(Map.of("merchantId",sku.merchantId(),"skuId",sku.skuId(),"quantity",body.quantity()))).getFirst().availableQty();
+        int available=available(sku,body.quantity());
+        addPrepared(userId,body,sku,available);
+    }
+
+    private int available(SkuSnapshot sku,int quantity) {
+        return inventory.availability(List.of(Map.of("merchantId",sku.merchantId(),"skuId",sku.skuId(),"quantity",quantity))).getFirst().availableQty();
+    }
+
+    private void addPrepared(long userId,CartController.AddItem body,SkuSnapshot sku,int available) {
         if(body.quantity()>available)throw new BusinessException("TR40902","加入数量超过可售库存");
         try{
             jdbc.update("""
@@ -30,6 +40,52 @@ class CartService {
                 ON DUPLICATE KEY UPDATE quantity=LEAST(quantity+VALUES(quantity),?),selected=TRUE,updated_at=CURRENT_TIMESTAMP
                 """,DistributedId.next(),userId,sku.shopId(),sku.merchantId(),sku.spuId(),sku.skuId(),body.quantity(),sku.salePrice(),sku.title(),mapper.writeValueAsString(sku),sku.coverUrl(),available);
         }catch(JsonProcessingException e){throw new IllegalStateException(e);}
+    }
+
+    Map<String, Object> addIdempotent(long userId, CartController.AddItem body, String key) {
+        if (key == null || key.isBlank()) {
+            add(userId, body);
+            return cart(userId);
+        }
+        if (key.length() > 100 || !key.matches("[A-Za-z0-9._:-]+")) {
+            throw new BusinessException("TR40002", "幂等键格式无效");
+        }
+        var existing = jdbc.queryForList("SELECT * FROM trade_cart_mutation WHERE user_id=? AND step_key=?",userId,key);
+        if (existing.isEmpty()) {
+            // Fetch live business data before opening the transaction or taking the mutation lock.
+            SkuSnapshot sku = requireSaleable(body.skuId());
+            int stock = available(sku,body.quantity());
+            transactions.executeWithoutResult(status -> {
+                try {
+                    jdbc.update("INSERT INTO trade_cart_mutation(user_id,step_key,sku_id,quantity) VALUES(?,?,?,?)",
+                            userId,key,body.skuId(),body.quantity());
+                } catch (DuplicateKeyException replay) {
+                    // A committed marker proves that the cart write in that transaction also committed.
+                    return;
+                }
+                addPrepared(userId,body,sku,stock);
+            });
+        }
+        var row = jdbc.queryForMap("SELECT * FROM trade_cart_mutation WHERE user_id=? AND step_key=?",userId,key);
+        if (((Number) row.get("sku_id")).longValue() != body.skuId()
+                || ((Number) row.get("quantity")).intValue() != body.quantity()) {
+            throw new BusinessException("TR40903", "幂等键已用于不同加购参数");
+        }
+        try {
+            if (row.get("result_json") != null) {
+                return mapper.readValue(String.valueOf(row.get("result_json")),
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            }
+            // Rendering may call other services. If it fails, replay resumes here without adding again.
+            var result = cart(userId);
+            jdbc.update("UPDATE trade_cart_mutation SET result_json=? WHERE user_id=? AND step_key=? AND result_json IS NULL",
+                    mapper.writeValueAsString(result), userId, key);
+            String stored = jdbc.queryForObject("SELECT result_json FROM trade_cart_mutation WHERE user_id=? AND step_key=?",
+                    String.class,userId,key);
+            return mapper.readValue(stored,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>() {});
+        } catch (JsonProcessingException error) {
+            throw new IllegalStateException(error);
+        }
     }
 
     void update(long userId,long id,CartController.UpdateItem body){

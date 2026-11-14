@@ -68,39 +68,13 @@ function Test-ComposeReady {
   return ($services -contains 'gateway') -and ($services -contains 'trade') -and ($services -contains 'mall-web')
 }
 
-# --- Static: event samples ---
-$schemaPath = Join-Path $Root 'contracts\events\domain-event.schema.json'
-$sampleDir = Join-Path $Root 'contracts\events\samples'
-if (-not (Test-Path $schemaPath)) {
-  Add-Check 'event_schema_present' 'FAIL' "missing $schemaPath"
-} else {
-  $schema = Get-Content $schemaPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  $required = @($schema.required)
-  $allowedTypes = @($schema.properties.eventType.enum)
-  Add-Check 'event_schema_present' 'PASS' "required=$($required.Count) eventTypes=$($allowedTypes.Count)"
-
-  $samples = @(Get-ChildItem $sampleDir -Filter *.json -ErrorAction SilentlyContinue)
-  if ($samples.Count -eq 0) {
-    Add-Check 'event_samples' 'FAIL' 'no sample json files'
-  } else {
-    foreach ($file in $samples) {
-      $obj = Get-Content $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-      $ok = $true
-      $reasons = @()
-      foreach ($f in $required) {
-        if (-not ($obj.PSObject.Properties.Name -contains $f)) {
-          $ok = $false
-          $reasons += "missing $f"
-        }
-      }
-      if ($obj.eventType -and ($allowedTypes -notcontains $obj.eventType)) {
-        $ok = $false
-        $reasons += "eventType not in enum: $($obj.eventType)"
-      }
-      if ($ok) { Add-Check "event_sample:$($file.Name)" 'PASS' }
-      else { Add-Check "event_sample:$($file.Name)" 'FAIL' ($reasons -join '; ') }
-    }
-  }
+# --- Static: validate event schemas and samples, including negative cases ---
+try {
+  $eventOutput = & python (Join-Path $Root 'scripts\event-contract-check.py') 2>&1
+  if ($LASTEXITCODE -eq 0) { Add-Check 'event_schema_samples' 'PASS' ($eventOutput -join '; ') }
+  else { Add-Check 'event_schema_samples' 'FAIL' ($eventOutput -join '; ') }
+} catch {
+  Add-Check 'event_schema_samples' 'FAIL' "Python and jsonschema are required: $($_.Exception.Message)"
 }
 
 # --- Static: checkout HTTP sample ---

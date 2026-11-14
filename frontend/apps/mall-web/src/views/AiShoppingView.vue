@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { PhPaperPlaneRight as Send, PhSparkle as Sparkle, PhWarning as Warning } from '@phosphor-icons/vue'
 import { mallApi } from '../api'
@@ -14,6 +14,10 @@ type ChatItem = {
   confirmations?: Array<Record<string, unknown>>
   products?: ProductCard[]
   degraded?: boolean
+  state?: 'streaming' | 'completed' | 'incomplete' | 'cancelled'
+  requestId?: string
+  requestText?: string
+  turnId?: string
 }
 
 type ProductCard = {
@@ -150,34 +154,70 @@ function parseSseBlocks(buffer: string): { events: Array<{ event: string; data: 
   return { events, rest }
 }
 
-async function send() {
-  const text = input.value.trim()
+let activeStream: AbortController | undefined
+let activeTurnId = ''
+
+function cancelStream() {
+  if (!activeStream) return
+  if (activeTurnId) {
+    void mallApi.request(`/api/v1/ai/conversations/${conversationNo.value}/turns/${activeTurnId}`,
+      { method: 'DELETE' }).catch(() => {})
+  }
+  activeStream.abort()
+}
+
+onUnmounted(cancelStream)
+
+async function abandon(assistant: ChatItem) {
+  if (!assistant.turnId) return
+  try {
+    const result = await mallApi.request<{ status: string; content?: string }>(
+      `/api/v1/ai/conversations/${conversationNo.value}/turns/${assistant.turnId}`, { method: 'DELETE' })
+    assistant.state = result.status === 'COMPLETED' ? 'completed' : 'cancelled'
+    if (result.content) assistant.content = result.content
+  } catch (error) {
+    items.value.push({ role: 'system', content: error instanceof Error ? error.message : '暂时无法放弃请求，请重试' })
+  }
+}
+
+async function send(retry?: ChatItem) {
+  const text = retry?.requestText ?? input.value.trim()
   if (!text || loading.value) return
   loading.value = true
-  items.value.push({ role: 'user', content: text })
+  const stream = new AbortController()
+  activeStream = stream
+  if (!retry) items.value.push({ role: 'user', content: text })
   input.value = ''
   streamLog.value = []
 
-  const assistant: ChatItem = {
+  const assistant: ChatItem = retry ?? {
     role: 'assistant',
     content: '',
     tools: [],
     citations: [],
     confirmations: [],
-    products: []
+    products: [],
+    requestId: crypto.randomUUID(),
+    requestText: text
   }
-  items.value.push(assistant)
+  assistant.state = 'streaming'
+  assistant.content = ''
+  if (!retry) items.value.push(assistant)
+  let completed = false
 
   try {
     await ensureConversation()
     const token = localStorage.getItem('geek.accessToken')
-    const qs = new URLSearchParams({ message: text })
     const response = await fetch(
-      `${apiBase}/api/v1/ai/conversations/${conversationNo.value}/stream?${qs}`,
+      `${apiBase}/api/v1/ai/conversations/${conversationNo.value}/stream`,
       {
+        method: 'POST',
+        signal: stream.signal,
+        body: JSON.stringify({ message: text, requestId: assistant.requestId }),
         headers: {
           Accept: 'text/event-stream',
-          'X-Request-Id': crypto.randomUUID(),
+          'Content-Type': 'application/json',
+          'X-Request-Id': assistant.requestId!,
           'X-Client-Type': 'WEB',
           ...(token ? { Authorization: `Bearer ${token}` } : {})
         }
@@ -199,10 +239,22 @@ async function send() {
       for (const e of parsed.events) {
         streamLog.value.push(e.event)
         const data = (e.data && typeof e.data === 'object' ? e.data : {}) as Record<string, unknown>
-        if (e.event === 'message.start') {
+        if (e.event === 'turn.accepted') {
+          activeTurnId = String(data.turnId ?? '')
+          assistant.turnId = activeTurnId
+        } else if (e.event === 'turn.cancelled') {
+          assistant.state = 'cancelled'
+          throw new Error(String(data.message ?? '生成已取消'))
+        } else if (e.event === 'turn.running') {
+          assistant.turnId = String(data.turnId ?? '')
+          throw new Error('原请求仍在执行，请稍后重试获取结果')
+        } else if (e.event === 'message.start') {
           assistant.agent = String(data.agent ?? '')
         } else if (e.event === 'message.delta') {
           assistant.content += String(data.delta ?? '')
+        } else if (e.event === 'message.reset') {
+          assistant.content = String(data.content ?? '')
+          assistant.degraded = Boolean(data.degraded)
         } else if (e.event === 'tool.call' || e.event === 'tool.result') {
           assistant.tools = [...(assistant.tools ?? []), data]
           refreshProducts(assistant)
@@ -212,6 +264,8 @@ async function send() {
         } else if (e.event === 'confirmation.required') {
           assistant.confirmations = [...(assistant.confirmations ?? []), data]
         } else if (e.event === 'message.complete') {
+          completed = true
+          assistant.state = 'completed'
           if (data.content) assistant.content = String(data.content)
           if (data.agent) assistant.agent = String(data.agent)
           if (Array.isArray(data.tools)) assistant.tools = data.tools as Array<Record<string, unknown>>
@@ -228,31 +282,43 @@ async function send() {
       await nextTick()
       listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: 'smooth' })
     }
+    if (!completed) throw new Error('连接已结束，回答未完成，请重试')
     if (!assistant.content) assistant.content = '（无内容）'
     refreshProducts(assistant)
   } catch (e) {
-    // Keep already-streamed answer/products if a late disconnect fires after message.complete.
-    const msg = e instanceof Error ? e.message : 'AI 请求失败，请先登录后再试'
-    if (!assistant.content || assistant.content === '（无内容）') {
-      assistant.content = msg
-    } else if (/network error|Failed to fetch|SSE/i.test(msg)) {
-      /* ignore late transport noise */
-    } else {
-      assistant.content = `${assistant.content}\n\n（${msg}）`
-    }
+    if (completed) return
+    assistant.state = stream.signal.aborted || assistant.state === 'cancelled' ? 'cancelled' : 'incomplete'
+    if (!assistant.content) assistant.content = stream.signal.aborted ? '已取消生成' :
+      e instanceof Error ? e.message : 'AI 请求失败，请稍后重试'
   } finally {
+    activeStream = undefined
+    activeTurnId = ''
     loading.value = false
     await nextTick()
     listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: 'smooth' })
   }
 }
 
-async function confirm(token: string) {
+const pendingApprovals = reactive(new Set<string>())
+
+async function confirm(approval: Record<string, unknown>) {
+  const token = String(approval.confirmationToken)
+  if (pendingApprovals.has(token)) return
+  pendingApprovals.add(token)
+  const path = `/api/v1/ai/tool-calls/${encodeURIComponent(token)}`
   try {
-    const data = await mallApi.request<{ message: string }>(`/api/v1/ai/tool-calls/${token}/confirm`, { method: 'POST' })
+    let data = await mallApi.request<{ message: string; status: string }>(`${path}/confirm`, { method: 'POST' })
+    for (let attempt = 0; data.status === 'CONFIRMED' && attempt < 8; attempt++) {
+      await new Promise(resolve => window.setTimeout(resolve, 750))
+      data = await mallApi.request<{ message: string; status: string }>(path)
+    }
+    approval.status = data.status
+    approval.message = data.message
     items.value.push({ role: 'system', content: data.message })
   } catch (e) {
     items.value.push({ role: 'system', content: e instanceof Error ? e.message : '确认失败' })
+  } finally {
+    pendingApprovals.delete(token)
   }
 }
 
@@ -285,6 +351,11 @@ onMounted(async () => {
           <strong v-else-if="m.role === 'user'">我</strong>
           <strong v-else>系统</strong>
           <p>{{ m.content }}</p>
+          <div v-if="m.state === 'incomplete' || m.state === 'cancelled'" role="status">
+            {{ m.state === 'cancelled' ? '已取消，回答未完成' : '回答未完成' }}
+            <button v-if="m.state === 'incomplete'" type="button" :disabled="loading" @click="send(m)">重试</button>
+            <button v-if="m.state === 'incomplete' && m.turnId" type="button" :disabled="loading" @click="abandon(m)">放弃此请求</button>
+          </div>
           <div v-if="m.degraded" class="badge warn"><Warning :size="14" /> 模型已降级</div>
 
           <div v-if="m.products?.length" class="ai-product-rail" aria-label="推荐商品">
@@ -318,9 +389,19 @@ onMounted(async () => {
             </li>
           </ul>
           <div v-if="m.confirmations?.length" class="confirm">
-            <button v-for="(c, i) in m.confirmations" :key="i" type="button" @click="confirm(String(c.confirmationToken))">
-              确认 {{ c.toolName }}
-            </button>
+            <div v-for="c in m.confirmations" :key="String(c.confirmationToken)">
+              <dl v-if="c.arguments">
+                <template v-for="(value, key) in (c.arguments as Record<string, unknown>)" :key="key">
+                  <dt>{{ { orderNo: '订单号', addressId: '地址编号', reason: '原因' }[String(key)] ?? key }}</dt>
+                  <dd>{{ value }}</dd>
+                </template>
+              </dl>
+              <button v-if="!c.status || c.status === 'PENDING' || c.status === 'CONFIRMED'" type="button"
+                      :disabled="pendingApprovals.has(String(c.confirmationToken))" @click="confirm(c)">
+                {{ c.status === 'CONFIRMED' ? '查询执行结果' : (c.toolName === 'modify_address_draft' ? '确认生成改地址草稿' : '确认生成取消订单草稿') }}
+              </button>
+              <p v-else>{{ c.message }}</p>
+            </div>
           </div>
         </article>
       </div>
@@ -335,9 +416,10 @@ onMounted(async () => {
       </aside>
     </div>
 
-    <form class="composer" @submit.prevent="send">
+    <form class="composer" @submit.prevent="send()">
       <textarea v-model="input" rows="2" placeholder="例如：8000 元内轻薄办公本 / NovaBuds 和 Buds Lite 怎么选" />
-      <button type="submit" :disabled="loading"><Send :size="18" /> {{ loading ? '思考中…' : '发送' }}</button>
+      <button v-if="loading" type="button" @click="cancelStream">停止生成</button>
+      <button v-else type="submit"><Send :size="18" /> 发送</button>
     </form>
   </section>
 </template>

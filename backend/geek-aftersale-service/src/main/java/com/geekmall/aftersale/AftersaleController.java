@@ -13,6 +13,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -25,14 +27,15 @@ import java.util.Set;
 class AftersaleController {
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
-    private final TradeRefundClient refunds;
     private final TradeOrderClient tradeOrders;
+    private final TransactionTemplate tx;
 
-    AftersaleController(JdbcTemplate jdbc, ObjectMapper mapper, TradeRefundClient refunds, TradeOrderClient tradeOrders) {
+    AftersaleController(JdbcTemplate jdbc, ObjectMapper mapper, TradeOrderClient tradeOrders,
+                        PlatformTransactionManager manager) {
         this.jdbc = jdbc;
         this.mapper = mapper;
-        this.refunds = refunds;
         this.tradeOrders = tradeOrders;
+        this.tx = new TransactionTemplate(manager);
     }
 
     @GetMapping("/aftersales")
@@ -53,11 +56,14 @@ class AftersaleController {
 
     @PostMapping("/aftersales")
     @PreAuthorize("hasRole('USER')")
-    @Transactional
     ApiResponse<Map<String, Object>> apply(@Valid @RequestBody Apply b, @AuthenticationPrincipal AuthPrincipal p, HttpServletRequest r) {
+        Map<String, Object> owned = tradeOrders.requireOwnedPaidItem(p.userId(), b.orderNo(), b.orderItemId(), b.merchantId(), b.quantity());
+        return ok(tx.execute(s -> applyForItem(b, p, owned)), r);
+    }
+
+    private Map<String, Object> applyForItem(Apply b, AuthPrincipal p, Map<String, Object> owned) {
         long id = DistributedId.next();
         String no = "AS" + id;
-        Map<String, Object> owned = tradeOrders.requireOwnedPaidItem(p.userId(), b.orderNo(), b.orderItemId(), b.merchantId(), b.quantity());
         // Block duplicate in-flight aftersales on the same order line (terminal states may re-apply).
         var open = jdbc.queryForList(
                 "SELECT aftersale_no AS aftersaleNo FROM aftersale_order WHERE order_item_id=? AND status NOT IN ('CANCELLED','REJECTED','COMPLETED') LIMIT 1 FOR UPDATE",
@@ -87,7 +93,7 @@ class AftersaleController {
                 "INSERT INTO aftersale_order(id,aftersale_no,order_no,order_item_id,user_id,merchant_id,type,quantity,reason,status,requested_amount,snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'APPLIED',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                 id, no, b.orderNo(), b.orderItemId(), p.userId(), b.merchantId(), b.type(), b.quantity(), b.reason(), amount, snapshot);
         log(id, null, "APPLIED", "USER", p.userId(), b.reason());
-        return ok(detail(no, p.userId(), false), r);
+        return detail(no, p.userId(), false);
     }
 
     @GetMapping("/aftersales/{no}")
@@ -123,7 +129,6 @@ class AftersaleController {
         // RETURN_REFUND stays APPROVED until user submits return logistics
         if ("REFUND_ONLY".equals(type)) {
             update(row, "REFUNDING", "SYSTEM", 0, null);
-            completeRefund(row);
         } else if ("EXCHANGE".equals(type)) {
             update(row, "EXCHANGING", "SYSTEM", 0, null);
         } else if ("REPAIR".equals(type)) {
@@ -215,7 +220,6 @@ class AftersaleController {
             var row = jdbc.queryForMap("SELECT * FROM aftersale_order WHERE aftersale_no=?", a.get("aftersale_no"));
             if ("REFUND_ONLY".equals(String.valueOf(row.get("type")))) {
                 update(row, "REFUNDING", "PLATFORM", p.userId(), "仲裁支持退款");
-                completeRefund(row);
             } else if ("RETURN_REFUND".equals(String.valueOf(row.get("type")))) {
                 // Wait for return logistics / warehouse receive before refund
             } else {
@@ -247,20 +251,10 @@ class AftersaleController {
         transition(row, "RECEIVED", operatorType, operatorId, "仓库验收通过");
         if ("RETURN_REFUND".equals(row.get("type"))) {
             update(row, "REFUNDING", "SYSTEM", 0, null);
-            completeRefund(row);
         } else if (Set.of("EXCHANGE", "REPAIR").contains(String.valueOf(row.get("type")))) {
             update(row, "COMPLETED", "SYSTEM", 0, "换货/维修完成");
         }
         return detail(no, 0, true);
-    }
-
-    private void completeRefund(Map<String, Object> row) {
-        BigDecimal approved = row.get("approved_amount") instanceof BigDecimal a ? a
-                : row.get("approved_amount") != null ? new BigDecimal(String.valueOf(row.get("approved_amount"))) : null;
-        refunds.refund(String.valueOf(row.get("order_no")), ((Number) row.get("order_item_id")).longValue(),
-                String.valueOf(row.get("aftersale_no")), ((Number) row.get("quantity")).intValue(), approved);
-        row.put("status", "REFUNDING");
-        update(row, "COMPLETED", "SYSTEM", 0, "退款已成功");
     }
 
     private void transition(String no, String target, String who, long operator, String reason, boolean merchant) {

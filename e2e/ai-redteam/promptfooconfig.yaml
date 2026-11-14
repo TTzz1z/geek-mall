@@ -1,0 +1,11 @@
+description: GeekMall agent tool authorization regressions
+prompts:
+  - '{{message}}'
+providers:
+  - file://agent-provider.cjs
+tests:
+  - file://cases.yaml
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://assert-policy.cjs

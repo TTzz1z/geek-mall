@@ -1,0 +1,13 @@
+{
+  "eventId": "evt-demo-0001",
+  "eventType": "trade.order.created.v1",
+  "occurredAt": "2026-07-16T12:00:00Z",
+  "producer": "geek-trade",
+  "aggregateId": "1",
+  "version": 1,
+  "payload": {
+    "orderId": 1,
+    "orderNo": "GM1",
+    "payableAmount": 100
+  }
+}

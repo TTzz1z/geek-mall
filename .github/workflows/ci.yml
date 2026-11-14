@@ -2,8 +2,12 @@ name: phase-7-ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -20,6 +24,20 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: geek_ai
+          MYSQL_USER: ci_ai
+          MYSQL_PASSWORD: ci-ai-fixture
+          MYSQL_ROOT_PASSWORD: ci-root-fixture
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -29,7 +47,53 @@ jobs:
           cache: maven
       - name: Verify backend unit/integration and migrations
         working-directory: backend
-        run: mvn -B -ntp -T 1C verify
+        run: mvn -B -ntp -T 1 -Pintegration -Drag.reportDir="$RUNNER_TEMP/rag-retrieval" verify
+      - name: Verify real service recovery after process and broker failures
+        env:
+          ACCEPTANCE_TEMP_DIR: ${{ runner.temp }}/service-recovery
+        run: python3 scripts/service-recovery-check.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify Agent policy against the running application
+        env:
+          AI_MYSQL_URL: jdbc:mysql://127.0.0.1:3306/geek_ai?allowPublicKeyRetrieval=true&useSSL=false
+          MYSQL_USER: ci_ai
+          MYSQL_PASSWORD: ci-ai-fixture
+          LLM_ENABLED: 'false'
+          AI_REDTEAM_URL: http://127.0.0.1:9011
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: |
+          export JWT_SECRET="$(openssl rand -hex 32)"
+          export AI_REDTEAM_TOKEN="$(node e2e/ai-redteam/fixture-token.cjs)"
+          echo "::add-mask::$AI_REDTEAM_TOKEN"
+          java -jar backend/geek-ai/target/geek-ai-0.1.0-SNAPSHOT.jar \
+            --spring.cloud.nacos.discovery.enabled=false --spring.cloud.discovery.enabled=false \
+            > "$RUNNER_TEMP/geek-ai-redteam.log" 2>&1 &
+          ai_pid=$!
+          trap 'kill "$ai_pid" 2>/dev/null || true' EXIT
+          if ! curl --fail --silent --show-error --retry 40 --retry-all-errors --retry-delay 1 "$AI_REDTEAM_URL/actuator/health"; then
+            tail -n 80 "$RUNNER_TEMP/geek-ai-redteam.log"
+            exit 1
+          fi
+          npx --yes promptfoo@0.125.1 eval --config e2e/ai-redteam/promptfooconfig.yaml --no-cache \
+            --output "$RUNNER_TEMP/geek-ai-redteam.json"
+          node -e 'const s=require(process.argv[1]).results.stats; if (!s.successes || s.failures || s.errors) process.exit(1)' \
+            "$RUNNER_TEMP/geek-ai-redteam.json"
+      - name: Retain backend acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-acceptance-${{ github.sha }}
+          path: |
+            backend/**/target/surefire-reports/*.xml
+            backend/**/target/failsafe-reports/*.xml
+            ${{ runner.temp }}/geek-ai-redteam.json
+            ${{ runner.temp }}/geek-ai-redteam.log
+            ${{ runner.temp }}/service-recovery/*.log
+            ${{ runner.temp }}/service-recovery/*.json
+            ${{ runner.temp }}/rag-retrieval/**
+          retention-days: 14
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -55,6 +119,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Validate Compose definitions
         run: |
           docker compose -f docker-compose.yml config --quiet
@@ -62,26 +128,147 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.observability.yml config --quiet
       - name: Contract schema samples
         run: |
-          python3 - <<'PY'
-          import json, pathlib, sys
-          schema=json.loads(pathlib.Path('contracts/events/domain-event.schema.json').read_text(encoding='utf-8'))
-          required=schema['required']; allowed=set(schema['properties']['eventType']['enum'])
-          fail=0
-          for p in pathlib.Path('contracts/events/samples').glob('*.json'):
-            obj=json.loads(p.read_text(encoding='utf-8'))
-            missing=[f for f in required if f not in obj]
-            if missing or obj.get('eventType') not in allowed:
-              print('FAIL', p, missing, obj.get('eventType')); fail+=1
-            else:
-              print('PASS', p.name)
-          sys.exit(fail)
-          PY
-      - name: Dependency vulnerability scan
+          python3 -m pip install jsonschema==4.23.0
+          python3 scripts/event-contract-check.py
+      - name: Verify recovery alerts
+        run: >-
+          docker run --rm --entrypoint /bin/promtool
+          --mount "type=bind,source=$GITHUB_WORKSPACE/observability/prometheus,target=/rules,readonly"
+          --workdir /rules prom/prometheus:v2.54.1 test rules recovery-alerts.test.yml
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Prepare vulnerability scan baseline
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0{40}$ ]]; then
+            BASE_SHA="$(git merge-base HEAD "refs/remotes/origin/$DEFAULT_BRANCH")"
+          fi
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::No valid revision for the dependency vulnerability baseline'
+            exit 1
+          fi
+          git worktree add --detach "$RUNNER_TEMP/trivy-base" "$BASE_SHA"
+          # Remove cached project SNAPSHOTs before building this revision.
+          rm -rf "$HOME/.m2/repository/com/geekmall"
+          mvn -B -ntp -f "$RUNNER_TEMP/trivy-base/backend/pom.xml" -DskipTests install
+      - name: Scan baseline dependencies
         uses: aquasecurity/trivy-action@v0.36.0
         with:
+          version: v0.76.2
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/trivy-base
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          format: json
+          output: ${{ runner.temp }}/trivy-base.json
+          exit-code: '0'
+          skip-dirs: '**/target'
+      - name: Build current dependencies after baseline scan
+        run: |
+          rm -rf "$HOME/.m2/repository/com/geekmall"
+          mvn -B -ntp -f backend/pom.xml -DskipTests install
+      - name: Scan current dependencies
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.76.2
           scan-type: fs
           scan-ref: .
+          scanners: vuln
           severity: CRITICAL,HIGH
+          format: json
+          output: ${{ runner.temp }}/trivy-head.json
           exit-code: '0'
-          ignore-unfixed: true
-        continue-on-error: true
+          skip-dirs: '**/target'
+          cache: false
+          skip-setup-trivy: true
+        env:
+          TRIVY_SKIP_DB_UPDATE: 'true'
+          TRIVY_SKIP_JAVA_DB_UPDATE: 'true'
+      - name: Verify vulnerability regression comparison
+        run: python3 scripts/test_trivy_regression_gate.py
+      - name: Block new HIGH and CRITICAL dependency findings
+        run: python3 scripts/trivy-regression-gate.py "$RUNNER_TEMP/trivy-base.json" "$RUNNER_TEMP/trivy-head.json" "$RUNNER_TEMP/trivy-base" "$GITHUB_WORKSPACE"
+      - name: Retain vulnerability comparison reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-findings-${{ github.sha }}
+          path: ${{ runner.temp }}/trivy-*.json
+          retention-days: 14
+  runtime-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build the baseline AI runtime image
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0{40}$ ]]; then
+            BASE_SHA="$(git merge-base HEAD "refs/remotes/origin/$DEFAULT_BRANCH")"
+          fi
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::No valid revision for the runtime vulnerability baseline'
+            exit 1
+          fi
+          git worktree add --detach "$RUNNER_TEMP/runtime-base" "$BASE_SHA"
+          mvn -B -ntp -f "$RUNNER_TEMP/runtime-base/backend/pom.xml" -pl geek-ai -am -DskipTests package
+          mkdir -p "$RUNNER_TEMP/runtime-base-image"
+          cp "$RUNNER_TEMP/runtime-base/backend/geek-ai/target/geek-ai-0.1.0-SNAPSHOT.jar" "$RUNNER_TEMP/runtime-base-image/app.jar"
+          cp "$RUNNER_TEMP/runtime-base/backend/Dockerfile.runtime" "$RUNNER_TEMP/runtime-base-image/Dockerfile"
+          docker build --label "org.opencontainers.image.revision=$BASE_SHA" -t geek-ai-acceptance:scan "$RUNNER_TEMP/runtime-base-image"
+      - name: Scan baseline runtime
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.76.2
+          image-ref: geek-ai-acceptance:scan
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          format: json
+          output: ${{ runner.temp }}/runtime-base.json
+          exit-code: '0'
+      - name: Build the release runtime image
+        run: |
+          mvn -B -ntp -f backend/pom.xml -pl geek-ai -am -DskipTests package
+          mkdir -p "$RUNNER_TEMP/runtime-head-image"
+          cp backend/geek-ai/target/geek-ai-0.1.0-SNAPSHOT.jar "$RUNNER_TEMP/runtime-head-image/app.jar"
+          cp backend/Dockerfile.runtime "$RUNNER_TEMP/runtime-head-image/Dockerfile"
+          # Reuse the scan tag so identical OS packages have a stable Trivy Target key.
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t geek-ai-acceptance:scan -t "geek-ai-acceptance:$GITHUB_SHA" "$RUNNER_TEMP/runtime-head-image"
+      - name: Scan current runtime with the same vulnerability database
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.76.2
+          image-ref: geek-ai-acceptance:scan
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          format: json
+          output: ${{ runner.temp }}/runtime-head.json
+          exit-code: '0'
+          cache: false
+          skip-setup-trivy: true
+        env:
+          TRIVY_SKIP_DB_UPDATE: 'true'
+          TRIVY_SKIP_JAVA_DB_UPDATE: 'true'
+      - name: Block new HIGH and CRITICAL runtime findings
+        run: python3 scripts/trivy-regression-gate.py "$RUNNER_TEMP/runtime-base.json" "$RUNNER_TEMP/runtime-head.json"
+      - name: Retain runtime findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-findings-${{ github.sha }}
+          path: ${{ runner.temp }}/runtime-*.json
+          retention-days: 14

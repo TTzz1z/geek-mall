@@ -44,6 +44,10 @@ scrape_configs:
           - host.docker.internal:8080
           - host.docker.internal:9001
           - host.docker.internal:9005
-          - host.docker.internal:9011
         labels:
           env: local
+
+  - job_name: ai-actuator
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["ai:9011"]

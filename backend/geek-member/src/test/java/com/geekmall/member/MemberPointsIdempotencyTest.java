@@ -13,10 +13,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MemberPointsIdempotencyTest {
     @Test
+    void releaseBeforeFreezeClosesOrderWithoutCreatingProfileOrDebitingPoints() {
+        var ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:points_close;MODE=MySQL;DB_CLOSE_DELAY=-1");
+        var jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE member_point_order_lock(order_no VARCHAR(64) PRIMARY KEY,closed BOOLEAN DEFAULT FALSE NOT NULL)");
+        jdbc.execute("CREATE TABLE member_point_reservation(order_no VARCHAR(64),user_id BIGINT,points INT,status VARCHAR(32))");
+        var controller = new MemberController(jdbc, "key");
+        var request = new MockHttpServletRequest();
+        controller.settle("key", "GM-CLOSED", "release", request);
+        assertThatThrownBy(() -> controller.freeze("key", "GM-CLOSED", 4, 20, request))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("关闭");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM member_point_reservation", Integer.class)).isZero();
+    }
+    @Test
     void freezeIsIdempotentAndRejectsOverdraft() {
         JdbcDataSource ds = new JdbcDataSource();
         ds.setURL("jdbc:h2:mem:member_points;MODE=MySQL;DB_CLOSE_DELAY=-1");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE member_point_order_lock(order_no VARCHAR(64) PRIMARY KEY,closed BOOLEAN DEFAULT FALSE NOT NULL)");
         jdbc.execute("CREATE TABLE member_profile(user_id BIGINT PRIMARY KEY,level_code VARCHAR(32),growth_value INT,point_balance INT,frozen_points INT,updated_at TIMESTAMP)");
         jdbc.execute("CREATE TABLE member_point_reservation(id BIGINT PRIMARY KEY,user_id BIGINT,order_no VARCHAR(64),points INT,status VARCHAR(32),created_at TIMESTAMP,updated_at TIMESTAMP,UNIQUE(order_no))");
         jdbc.execute("CREATE TABLE member_point_log(id BIGINT PRIMARY KEY,user_id BIGINT,change_type VARCHAR(32),points INT,balance INT,frozen_balance INT,source_type VARCHAR(32),source_id VARCHAR(64),created_at TIMESTAMP)");

@@ -63,9 +63,22 @@ class MemberController {
                                             HttpServletRequest r) {
         requireInternal(key);
         if (points <= 0) throw new BusinessException("MB40001", "积分必须为正数");
+        lockOrder(orderNo, false);
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT closed FROM member_point_order_lock WHERE order_no=?", Boolean.class, orderNo))) {
+            throw new BusinessException("MB40903", "订单积分预留已关闭");
+        }
         ensure(userId);
-        var old = jdbc.queryForList("SELECT status FROM member_point_reservation WHERE order_no=?", orderNo);
-        if (!old.isEmpty()) return ok(Map.of("orderNo", orderNo, "points", points, "idempotentReplay", true), r);
+        jdbc.queryForObject("SELECT user_id FROM member_profile WHERE user_id=? FOR UPDATE", Long.class, userId);
+        var old = jdbc.queryForList("SELECT user_id,points,status FROM member_point_reservation WHERE order_no=? FOR UPDATE", orderNo);
+        if (!old.isEmpty()) {
+            var reservation = old.getFirst();
+            if (((Number) reservation.get("user_id")).longValue() != userId
+                    || ((Number) reservation.get("points")).intValue() != points
+                    || !"FROZEN".equals(reservation.get("status"))) {
+                throw new BusinessException("MB40902", "积分冻结请求与已有预留不一致");
+            }
+            return ok(Map.of("orderNo", orderNo, "points", points, "idempotentReplay", true), r);
+        }
         int changed = jdbc.update(
                 "UPDATE member_profile SET point_balance=point_balance-?,frozen_points=frozen_points+?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND point_balance>=?",
                 points, points, userId, points);
@@ -84,6 +97,7 @@ class MemberController {
                                             @PathVariable String action,
                                             HttpServletRequest r) {
         requireInternal(key);
+        lockOrder(orderNo, "release".equals(action) || "refund".equals(action));
         var rows = jdbc.queryForList("SELECT user_id,points,status FROM member_point_reservation WHERE order_no=? FOR UPDATE", orderNo);
         if (rows.isEmpty()) {
             if ("release".equals(action) || "refund".equals(action)) {
@@ -119,6 +133,10 @@ class MemberController {
 
     private void requireInternal(String key) {
         if (key == null || !internalKey.equals(key)) throw new BusinessException("AU40304", "内部服务凭证无效");
+    }
+
+    private void lockOrder(String orderNo, boolean close) {
+        jdbc.update("INSERT INTO member_point_order_lock(order_no,closed) VALUES(?,?) ON DUPLICATE KEY UPDATE closed=closed OR VALUES(closed)", orderNo, close);
     }
 
     private void ensure(long userId) {

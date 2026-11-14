@@ -1,8 +1,14 @@
 {
   "eventId": "evt-demo-0001",
   "eventType": "payment.payment.succeeded.v1",
-  "aggregateType": "payment",
-  "aggregateId": "PAY1",
-  "payload": { "orderNo": "GM1", "amount": 100.00, "channel": "SIMULATED" },
-  "occurredAt": "2026-07-16T12:00:00Z"
+  "occurredAt": "2026-07-16T12:00:00Z",
+  "producer": "geek-trade",
+  "aggregateId": "1",
+  "version": 1,
+  "payload": {
+    "orderNo": "GM1",
+    "paymentNo": "PAY1",
+    "amount": 100,
+    "channel": "SIMULATED"
+  }
 }

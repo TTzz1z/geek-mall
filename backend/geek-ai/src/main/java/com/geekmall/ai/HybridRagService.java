@@ -2,369 +2,510 @@ package com.geekmall.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.geekmall.common.api.BusinessException;
+import com.geekmall.common.web.InternalRestClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 public class HybridRagService {
-    static final String INDEX = "geek-knowledge-v1";
-
+    private static final Logger log = LoggerFactory.getLogger(HybridRagService.class);
+    private static final String PRODUCT = "PRODUCT";
+    private static final String RULE = "RULE";
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
-    private final HttpClient http = HttpClient.newBuilder().build();
-    private final String esBase;
-    private final boolean milvusEnabled;
-    private final String milvusHost;
-    private final int milvusPort;
-    private final double minEvidenceScore;
+    private final RestClient es;
+    private final EmbeddingClient embeddings;
+    private final String index;
+    private final double minimumSimilarity;
+    private final TransactionTemplate tx;
+
+    HybridRagService(JdbcTemplate jdbc, ObjectMapper mapper, EmbeddingClient embeddings,
+                     String esBase, String index) {
+        this(jdbc, mapper, embeddings, esBase, index, 0);
+    }
 
     @Autowired
-    public HybridRagService(JdbcTemplate jdbc, ObjectMapper mapper,
-                            @Value("${geek.elasticsearch-url}") String esBase,
-                            @Value("${geek.milvus.enabled:false}") boolean milvusEnabled,
-                            @Value("${geek.milvus.host:localhost}") String milvusHost,
-                            @Value("${geek.milvus.port:19530}") int milvusPort,
-                            @Value("${geek.rag.min-evidence-score:0.45}") double minEvidenceScore) {
+    HybridRagService(JdbcTemplate jdbc, ObjectMapper mapper, EmbeddingClient embeddings,
+                     @Value("${geek.elasticsearch-url}") String esBase,
+                     @Value("${geek.knowledge.index:geek-knowledge-v2}") String index,
+                     @Value("${geek.knowledge.minimum-similarity:0.62}") double minimumSimilarity,
+                     @Value("${geek.knowledge.require-semantic-gate:false}") boolean requireSemanticGate) {
+        this(jdbc, mapper, embeddings, esBase, index, embeddings.enabled() || requireSemanticGate ? minimumSimilarity : 0);
+        if (requireSemanticGate && minimumSimilarity <= 0) throw new IllegalArgumentException("required semantic gate must have a positive threshold");
+    }
+
+    HybridRagService(JdbcTemplate jdbc, ObjectMapper mapper, EmbeddingClient embeddings,
+                     String esBase, String index, double minimumSimilarity) {
         this.jdbc = jdbc;
         this.mapper = mapper;
-        this.esBase = esBase.endsWith("/") ? esBase.substring(0, esBase.length() - 1) : esBase;
-        this.milvusEnabled = milvusEnabled;
-        this.milvusHost = milvusHost;
-        this.milvusPort = milvusPort;
-        this.minEvidenceScore = minEvidenceScore;
-    }
-
-    HybridRagService(JdbcTemplate jdbc, ObjectMapper mapper, String esBase, boolean milvusEnabled,
-                     String milvusHost, int milvusPort) {
-        this(jdbc, mapper, esBase, milvusEnabled, milvusHost, milvusPort, 0.45);
-    }
-
-    @PostConstruct
-    void bootstrapIndex() {
-        try {
-            ensureIndex();
-            reindexAllChunks();
-        } catch (Exception ignored) {
-            // ES 不可用时退回 MySQL BM25 + 本地向量
+        this.es = InternalRestClient.create(esBase);
+        this.embeddings = embeddings;
+        this.index = index;
+        if (!Double.isFinite(minimumSimilarity) || minimumSimilarity < 0 || minimumSimilarity > 1) {
+            throw new IllegalArgumentException("minimum similarity must be between 0 and 1");
         }
+        this.minimumSimilarity = minimumSimilarity;
+        this.tx = new TransactionTemplate(new DataSourceTransactionManager(java.util.Objects.requireNonNull(jdbc.getDataSource())));
     }
 
     public List<Citation> retrieve(String query, int topK) {
-        String q = query == null ? "" : query.trim();
-        if (q.isBlank()) return List.of();
+        return retrieve(query, topK, PRODUCT);
+    }
 
-        Map<Long, Scored> fused = new LinkedHashMap<>();
+    List<Citation> retrieve(String query, int topK, String scope) {
+        return retrieve(query, topK, scope, false);
+    }
 
-        // 1) MySQL keyword + local 64-dimensional deterministic character-hash prototype.
-        for (Map<String, Object> row : loadChunks()) {
-            long chunkId = ((Number) row.get("chunkId")).longValue();
-            String content = String.valueOf(row.get("content"));
-            double bm25 = keywordScore(q, content + " " + row.get("documentTitle"));
-            double vector = vectorScore(q, content, String.valueOf(row.get("vectorId")), chunkId);
-            double score = 0.35 * bm25 + 0.35 * vector;
-            if (score > 0) fused.put(chunkId, new Scored(row, score, bm25, vector, 0));
-        }
+    List<Citation> retrieveForEvaluation(String query, int topK, String scope) {
+        return retrieve(query, topK, scope, true);
+    }
 
-        // 2) Elasticsearch BM25 recall
-        Map<Long, Double> esHits = esRecall(q, Math.max(topK * 4, 12));
-        for (var e : esHits.entrySet()) {
-            Scored existing = fused.get(e.getKey());
-            if (existing == null) {
-                Map<String, Object> row = findChunk(e.getKey());
-                if (row == null) continue;
-                fused.put(e.getKey(), new Scored(row, 0.4 * e.getValue(), keywordScore(q, String.valueOf(row.get("content"))), 0, e.getValue()));
-            } else {
-                fused.put(e.getKey(), new Scored(existing.row, existing.fused + 0.4 * e.getValue(),
-                        existing.bm25, existing.vector, e.getValue()));
-            }
-        }
-
-        List<Scored> scored = new ArrayList<>(fused.values());
-        scored.sort((a, b) -> Double.compare(rerank(q, b), rerank(q, a)));
-        List<Scored> top = scored.stream().limit(topK).toList();
-        if (top.isEmpty() || rerank(q, top.getFirst()) < minEvidenceScore) {
+    private List<Citation> retrieve(String query, int topK, String scope, boolean requireBackends) {
+        if (query == null || query.isBlank() || topK < 1 || !(PRODUCT.equals(scope) || RULE.equals(scope))) return List.of();
+        if (minimumSimilarity > 0 && !embeddings.enabled()) {
+            if (requireBackends) throw new BusinessException("AI50315", "语义证据门禁未配置真实 embedding 后端");
             return List.of();
         }
-        return top.stream().map(s -> toCitation(s, q, rerank(q, s))).toList();
+        int k = Math.min(20, topK);
+        int candidates = k * 4;
+        var filters = new ArrayList<Map<String, Object>>();
+        filters.add(Map.of("term", Map.of("kbCode", scope)));
+        filters.add(Map.of("term", Map.of("scopeType", "PUBLIC")));
+        var lexical = recall(Map.of("size", candidates, "_source", false,
+                "query", Map.of("bool", Map.of("filter", filters, "must", Map.of("multi_match",
+                        Map.of("query", query, "fields", List.of("title^2", "content")))))), requireBackends);
+        List<Long> semantic = List.of();
+        if (embeddings.enabled()) {
+            try {
+                var vectorFilters = new ArrayList<>(filters);
+                vectorFilters.add(Map.of("term", Map.of("embeddingModel", embeddings.model())));
+                semantic = recall(Map.of("size", candidates, "_source", false, "knn",
+                        Map.of("field", "embedding", "query_vector", embeddings.query(query), "k", candidates,
+                                "num_candidates", candidates * 4, "filter", vectorFilters,
+                                "similarity", minimumSimilarity > 0 ? minimumSimilarity : 0.45)), requireBackends);
+            } catch (RuntimeException e) {
+                if (requireBackends) throw new BusinessException("AI50315", "语义检索不可用，无法完成评测");
+                log.warn("Semantic recall unavailable ({})", e.getClass().getSimpleName());
+            }
+        }
+        Map<Long, Double> ranking = reciprocalRanks(lexical, semantic);
+        if (minimumSimilarity > 0) {
+            var admitted = new HashSet<>(semantic);
+            ranking.keySet().removeIf(id -> !admitted.contains(id));
+        }
+        if (ranking.isEmpty()) return List.of();
+        String placeholders = ranking.keySet().stream().map(id -> "?").collect(Collectors.joining(","));
+        List<Object> parameters = new ArrayList<>(ranking.keySet());
+        parameters.add(scope);
+        Map<Long, Citation> current = new HashMap<>();
+        jdbc.query("""
+                SELECT c.id,c.content,c.metadata_json,d.id AS document_id,d.title,d.source_type,d.source_id,d.version_no
+                FROM knowledge_chunk c JOIN knowledge_document d ON d.id=c.document_id
+                JOIN knowledge_base kb ON kb.id=d.kb_id
+                WHERE c.id IN (%s) AND kb.kb_code=? AND kb.scope_type='PUBLIC'
+                    AND kb.status='ENABLED' AND d.parse_status='READY' AND d.activation_status='ACTIVE'
+                """.formatted(placeholders), rs -> {
+            long id = rs.getLong("id");
+            current.put(id, new Citation(rs.getLong("document_id"), id, rs.getString("title"), rs.getString("source_type"),
+                    rs.getString("source_id"), section(rs.getString("metadata_json")), rs.getString("version_no"),
+                    rs.getString("content"), ranking.get(id), Map.of("scope", scope)));
+        }, parameters.toArray());
+        var seenSources = new HashSet<String>();
+        return ranking.keySet().stream().filter(current::containsKey).map(current::get)
+                .filter(citation -> citation.sourceId() != null && seenSources.add(citation.sourceId()))
+                .limit(k).toList();
+    }
+
+    String embeddingModel() {
+        return embeddings.enabled() ? embeddings.model() : "LEXICAL";
+    }
+
+    double minimumSimilarity() { return minimumSimilarity; }
+
+    boolean indexingComplete() {
+        // A reusable ES name alone cannot prove that SQL success belongs to this physical index.
+        IndexIdentity physical;
+        try {
+            physical = probeIndex();
+        } catch (RuntimeException e) {
+            return false;
+        }
+        var states = jdbc.queryForList("SELECT generation,model_profile,index_uuid FROM knowledge_index_state WHERE index_name=?", index);
+        if (states.isEmpty() || !embeddingModel().equals(states.getFirst().get("model_profile"))) return false;
+        if (physical == null || !physical.owned() || !physical.uuid().equals(states.getFirst().get("index_uuid"))) return false;
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT NOT EXISTS(
+                  SELECT 1 FROM knowledge_chunk c JOIN knowledge_document d ON d.id=c.document_id
+                  JOIN knowledge_base kb ON kb.id=d.kb_id
+                  WHERE d.parse_status='READY' AND d.activation_status IN ('ACTIVE','CANDIDATE')
+                    AND kb.status='ENABLED' AND kb.scope_type='PUBLIC'
+                    AND (c.index_profile IS NULL OR c.index_profile<>?)
+                )
+                """, Boolean.class, profile(((Number) states.getFirst().get("generation")).longValue())));
+    }
+
+    private List<Long> recall(Map<String, Object> request, boolean requireBackend) {
+        try {
+            JsonNode result = es.post().uri("/{index}/_search", index).body(request).retrieve().body(JsonNode.class);
+            if (result == null || !result.path("hits").path("hits").isArray()) {
+                throw new IllegalStateException("invalid Elasticsearch response");
+            }
+            var ids = new ArrayList<Long>();
+            for (JsonNode hit : result.path("hits").path("hits")) {
+                ids.add(Long.parseLong(hit.path("_id").asText()));
+            }
+            return ids;
+        } catch (RuntimeException e) {
+            if (requireBackend) throw new BusinessException("AI50315", "Elasticsearch 不可用，无法完成评测");
+            log.warn("Elasticsearch recall unavailable ({})", e.getClass().getSimpleName());
+            return List.of();
+        }
+    }
+
+    static Map<Long, Double> reciprocalRanks(List<Long> lexical, List<Long> semantic) {
+        Map<Long, Double> scores = new HashMap<>();
+        for (List<Long> ranked : List.of(lexical, semantic)) {
+            int rank = 1;
+            for (Long id : ranked) scores.merge(id, 1.0 / (60 + rank++), Double::sum);
+        }
+        Map<Long, Double> sorted = new LinkedHashMap<>();
+        scores.entrySet().stream().sorted(Map.Entry.<Long, Double>comparingByValue().reversed()
+                .thenComparing(Map.Entry.comparingByKey())).forEach(e -> sorted.put(e.getKey(), e.getValue()));
+        return sorted;
+    }
+
+    @Scheduled(fixedDelayString = "${geek.knowledge.index-interval:5000}")
+    synchronized void indexPending() {
+        List<Map<String, Object>> rows = List.of();
+        try {
+            // Probe before selecting work: a deleted ES index must reset already-successful SQL tasks.
+            IndexSnapshot target = ensureIndex();
+            String profile = target.profile();
+            cleanupRetired();
+            rows = jdbc.queryForList("""
+                SELECT c.id,c.content,d.id AS document_id,d.title,k.kb_code,k.scope_type
+                FROM knowledge_chunk c JOIN knowledge_document d ON d.id=c.document_id
+                JOIN knowledge_base k ON k.id=d.kb_id
+                WHERE d.parse_status='READY' AND k.status='ENABLED' AND k.scope_type='PUBLIC'
+                  AND d.activation_status IN ('ACTIVE','CANDIDATE')
+                  AND (c.index_profile IS NULL OR c.index_profile<>?)
+                  AND (c.index_retry_at IS NULL OR c.index_retry_at<=CURRENT_TIMESTAMP)
+                ORDER BY c.id LIMIT 16
+                """, profile);
+            List<List<Double>> vectors = embeddings.enabled()
+                    && !rows.isEmpty() ? embeddings.embed(rows.stream().map(row -> String.valueOf(row.get("content"))).toList()) : List.of();
+            StringBuilder bulk = new StringBuilder();
+            for (int i = 0; i < rows.size(); i++) {
+                var row = rows.get(i);
+                bulk.append(mapper.writeValueAsString(Map.of("index", Map.of("_id", row.get("id"))))).append('\n');
+                var document = new LinkedHashMap<String, Object>();
+                document.put("title", row.get("title"));
+                document.put("content", row.get("content"));
+                document.put("kbCode", row.get("kb_code"));
+                document.put("scopeType", row.get("scope_type"));
+                document.put("documentId", row.get("document_id"));
+                if (!vectors.isEmpty()) {
+                    document.put("embeddingModel", embeddings.model());
+                    document.put("embedding", vectors.get(i));
+                }
+                bulk.append(mapper.writeValueAsString(document)).append('\n');
+            }
+            if (!rows.isEmpty()) {
+                JsonNode result = es.post().uri("/{index}/_bulk?refresh=wait_for", index)
+                    .contentType(org.springframework.http.MediaType.parseMediaType("application/x-ndjson"))
+                    .body(bulk.toString().getBytes(StandardCharsets.UTF_8)).retrieve().body(JsonNode.class);
+                if (result == null || result.path("errors").asBoolean(true)) throw new IllegalStateException("bulk indexing failed");
+                IndexIdentity afterBulk = probeIndex();
+                if (afterBulk == null || !afterBulk.owned() || !target.uuid().equals(afterBulk.uuid())) {
+                    invalidateIdentity(target);
+                    throw new IllegalStateException("physical index changed during bulk indexing");
+                }
+            }
+            List<Map<String, Object>> indexed = rows;
+            tx.executeWithoutResult(status -> {
+                var state = lockState();
+                if (!profile.equals(profile(((Number) state.get("generation")).longValue()))
+                        || !target.uuid().equals(state.get("index_uuid"))) return;
+                for (var row : indexed) {
+                    jdbc.update("UPDATE knowledge_chunk SET index_profile=?,index_retry_at=NULL WHERE id=?", profile, row.get("id"));
+                    // Off-sale can race an in-flight bulk write. Keep its cleanup retry durable.
+                    jdbc.update("""
+                            UPDATE knowledge_document SET index_cleanup_pending=TRUE WHERE id=?
+                            AND activation_status IN ('SUPERSEDED','INACTIVE')
+                            """, row.get("document_id"));
+                }
+                activateCompletedCandidates(profile);
+                jdbc.update("""
+                        UPDATE knowledge_index_state SET status=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE index_name=?
+                        """, pendingCount(profile) == 0 ? "READY" : "BUILDING", index);
+            });
+            cleanupRetired();
+        } catch (Exception e) {
+            for (var row : rows) {
+                jdbc.update("UPDATE knowledge_chunk SET index_retry_at=TIMESTAMPADD(SECOND,15,CURRENT_TIMESTAMP) WHERE id=?", row.get("id"));
+            }
+            jdbc.update("""
+                    UPDATE knowledge_index_state SET status='RETRYING',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE index_name=?
+                    """, e.getClass().getSimpleName(), index);
+            log.warn("Knowledge indexing will retry ({})", e.getClass().getSimpleName());
+        }
+    }
+
+    public synchronized Map<String, Object> rebuildIndex() {
+        registerState();
+        tx.executeWithoutResult(status -> {
+            lockState();
+            resetGeneration();
+        });
+        return indexStatus();
+    }
+
+    public synchronized Map<String, Object> requestActivation(long documentId) {
+        return tx.execute(status -> {
+            var docs = jdbc.queryForList("SELECT * FROM knowledge_document WHERE id=?", documentId);
+            if (docs.isEmpty()) throw new BusinessException("AI40405", "知识文档不存在");
+            var doc = docs.getFirst();
+            jdbc.queryForObject("SELECT id FROM knowledge_base WHERE id=? FOR UPDATE", Long.class, doc.get("kb_id"));
+            doc = jdbc.queryForMap("SELECT * FROM knowledge_document WHERE id=? FOR UPDATE", documentId);
+            if (!"READY".equals(doc.get("parse_status"))) throw new BusinessException("AI40905", "仅可激活解析完成且未下架的文档");
+            if ("ACTIVE".equals(doc.get("activation_status"))) {
+                return Map.of("documentId", documentId, "activationStatus", "ACTIVE", "indexStatus", "CURRENT");
+            }
+            if ("CANDIDATE".equals(doc.get("activation_status"))) {
+                return Map.of("documentId", documentId, "activationStatus", "CANDIDATE", "indexStatus", "PENDING");
+            }
+            jdbc.update("""
+                    UPDATE knowledge_document SET activation_status='SUPERSEDED',index_cleanup_pending=TRUE
+                    WHERE kb_id=? AND source_type=? AND source_id=? AND activation_status='CANDIDATE' AND id<>?
+                    """, doc.get("kb_id"), doc.get("source_type"), doc.get("source_id"), documentId);
+            jdbc.update("UPDATE knowledge_document SET activation_status='CANDIDATE',index_cleanup_pending=FALSE WHERE id=?", documentId);
+            jdbc.update("UPDATE knowledge_chunk SET index_profile=NULL,index_retry_at=NULL WHERE document_id=?", documentId);
+            return Map.of("documentId", documentId, "activationStatus", "CANDIDATE", "indexStatus", "PENDING");
+        });
+    }
+
+    public Map<String, Object> indexStatus() {
+        var rows = jdbc.queryForList("SELECT * FROM knowledge_index_state WHERE index_name=?", index);
+        if (rows.isEmpty()) return Map.of("index", index, "status", "NOT_STARTED", "model", embeddingModel());
+        var state = rows.getFirst();
+        long generation = ((Number) state.get("generation")).longValue();
+        var result = new LinkedHashMap<String, Object>();
+        result.put("index", index);
+        result.put("generation", generation);
+        result.put("indexUuid", state.get("index_uuid"));
+        result.put("model", state.get("model_profile"));
+        result.put("status", state.get("status"));
+        result.put("pendingChunks", pendingCount(profile(generation)));
+        result.put("lastError", state.get("last_error"));
+        return result;
+    }
+
+    private String profile(long generation) {
+        return index + "/" + embeddingModel() + "/" + generation;
+    }
+
+    private void registerState() {
+        jdbc.update("""
+                INSERT INTO knowledge_index_state(index_name,generation,model_profile,status,updated_at)
+                VALUES(?,0,?,'BUILDING',CURRENT_TIMESTAMP)
+                ON DUPLICATE KEY UPDATE index_name=index_name
+                """, index, embeddingModel());
+    }
+
+    private Map<String, Object> lockState() {
+        return jdbc.queryForMap("SELECT * FROM knowledge_index_state WHERE index_name=? FOR UPDATE", index);
+    }
+
+    private void resetGeneration() {
+        jdbc.update("""
+                UPDATE knowledge_index_state SET generation=generation+1,model_profile=?,status='BUILDING',
+                    last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE index_name=?
+                """, embeddingModel(), index);
+        jdbc.update("""
+                UPDATE knowledge_chunk SET index_profile=NULL,index_retry_at=NULL
+                WHERE document_id IN (SELECT id FROM knowledge_document WHERE parse_status='READY'
+                    AND activation_status IN ('ACTIVE','CANDIDATE'))
+                """);
+    }
+
+    private IndexIdentity probeIndex() {
+        try {
+            JsonNode response = es.get().uri("/{index}?filter_path=*.settings.index.uuid,*.mappings._meta.knowledgeOwner", index)
+                    .retrieve().body(JsonNode.class);
+            JsonNode details = response == null ? mapper.createObjectNode() : response.path(index);
+            String uuid = details.path("settings").path("index").path("uuid").asText("");
+            if (uuid.isBlank()) throw new IllegalStateException("missing physical Elasticsearch index identity");
+            return new IndexIdentity(uuid, index.equals(details.path("mappings").path("_meta").path("knowledgeOwner").asText()));
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) return null;
+            throw e;
+        }
+    }
+
+    private IndexSnapshot ensureIndex() {
+        registerState();
+        IndexIdentity physical = probeIndex();
+        // Invalidate SQL success durably before any external creation. A lost PUT response or
+        // process exit must leave retryable chunks even when ES already committed the empty index.
+        IndexPreparation prepared = tx.execute(status -> {
+            var state = lockState();
+            boolean recreate = physical == null || !physical.owned() || !physical.uuid().equals(state.get("index_uuid"));
+            if (recreate || !embeddingModel().equals(state.get("model_profile"))
+                    || ((Number) state.get("generation")).longValue() == 0) resetGeneration();
+            if (recreate) jdbc.update("UPDATE knowledge_index_state SET index_uuid=NULL WHERE index_name=?", index);
+            return new IndexPreparation(profile(((Number) lockState().get("generation")).longValue()), recreate);
+        });
+        if (prepared.recreate()) {
+            // An automatically recreated index has dynamic mappings. Replace this SQL-derived
+            // index explicitly instead of merely adopting its UUID and leaving broken filters.
+            if (physical != null) {
+                try { es.delete().uri("/{index}", index).retrieve().toBodilessEntity(); }
+                catch (RestClientResponseException e) { if (e.getStatusCode().value() != 404) throw e; }
+            }
+            try {
+                es.put().uri("/{index}", index).body(Map.of("mappings", Map.of(
+                    "_meta", Map.of("knowledgeOwner", index), "properties", Map.of(
+                    "title", Map.of("type", "text"),
+                    "content", Map.of("type", "text"),
+                    "kbCode", Map.of("type", "keyword"),
+                    "scopeType", Map.of("type", "keyword"),
+                    "documentId", Map.of("type", "long"),
+                    "embeddingModel", Map.of("type", "keyword"),
+                    "embedding", Map.of("type", "dense_vector", "dims", EmbeddingClient.DIMENSIONS,
+                            "index", true, "similarity", "cosine"))))).retrieve().toBodilessEntity();
+            } catch (RestClientResponseException e) {
+                // Another creator may have won after the HEAD probe. All other failures retry.
+                if (e.getStatusCode().value() != 400
+                        || !e.getResponseBodyAsString().contains("resource_already_exists_exception")) throw e;
+            }
+        }
+        IndexIdentity confirmed = prepared.recreate() ? probeIndex() : physical;
+        if (confirmed == null || !confirmed.owned()) throw new IllegalStateException("knowledge index mapping is not owned");
+        tx.executeWithoutResult(status -> {
+            var state = lockState();
+            if (!prepared.profile().equals(profile(((Number) state.get("generation")).longValue()))) {
+                throw new IllegalStateException("knowledge index generation changed during preparation");
+            }
+            jdbc.update("UPDATE knowledge_index_state SET index_uuid=? WHERE index_name=?", confirmed.uuid(), index);
+        });
+        return new IndexSnapshot(prepared.profile(), confirmed.uuid());
+    }
+
+    private void invalidateIdentity(IndexSnapshot expected) {
+        tx.executeWithoutResult(status -> {
+            var state = lockState();
+            if (expected.profile().equals(profile(((Number) state.get("generation")).longValue()))
+                    && expected.uuid().equals(state.get("index_uuid"))) {
+                resetGeneration();
+                jdbc.update("UPDATE knowledge_index_state SET index_uuid=NULL WHERE index_name=?", index);
+            }
+        });
+    }
+
+    private record IndexIdentity(String uuid, boolean owned) {}
+    private record IndexPreparation(String profile, boolean recreate) {}
+    private record IndexSnapshot(String profile, String uuid) {}
+
+    private long pendingCount(String profile) {
+        return jdbc.queryForObject("""
+                SELECT COUNT(*) FROM knowledge_chunk c JOIN knowledge_document d ON d.id=c.document_id
+                JOIN knowledge_base k ON k.id=d.kb_id
+                WHERE d.parse_status='READY' AND d.activation_status IN ('ACTIVE','CANDIDATE')
+                  AND k.status='ENABLED' AND k.scope_type='PUBLIC'
+                  AND (c.index_profile IS NULL OR c.index_profile<>?)
+                """, Long.class, profile);
+    }
+
+    private void activateCompletedCandidates(String profile) {
+        var candidates = jdbc.queryForList("""
+                SELECT d.id,d.kb_id,d.source_type,d.source_id FROM knowledge_document d
+                JOIN knowledge_base k ON k.id=d.kb_id
+                WHERE d.parse_status='READY' AND d.activation_status='CANDIDATE'
+                  AND k.status='ENABLED' AND k.scope_type='PUBLIC'
+                  AND EXISTS(SELECT 1 FROM knowledge_chunk c WHERE c.document_id=d.id)
+                  AND NOT EXISTS(SELECT 1 FROM knowledge_chunk c WHERE c.document_id=d.id
+                      AND (c.index_profile IS NULL OR c.index_profile<>?)) ORDER BY d.id
+                """, profile);
+        for (var doc : candidates) {
+            jdbc.queryForObject("SELECT id FROM knowledge_base WHERE id=? FOR UPDATE", Long.class, doc.get("kb_id"));
+            // Ingest and off-sale share this KB lock; recheck after acquiring it.
+            if (!"CANDIDATE".equals(jdbc.queryForObject("SELECT activation_status FROM knowledge_document WHERE id=?",
+                    String.class, doc.get("id")))) continue;
+            jdbc.update("""
+                    UPDATE knowledge_document SET activation_status='SUPERSEDED',index_cleanup_pending=TRUE
+                    WHERE kb_id=? AND source_type=? AND source_id=? AND activation_status='ACTIVE'
+                    """, doc.get("kb_id"), doc.get("source_type"), doc.get("source_id"));
+            jdbc.update("UPDATE knowledge_document SET activation_status='ACTIVE' WHERE id=?", doc.get("id"));
+        }
+    }
+
+    private void cleanupRetired() {
+        for (var doc : jdbc.queryForList("""
+                SELECT id FROM knowledge_document WHERE index_cleanup_pending=TRUE
+                  AND activation_status IN ('SUPERSEDED','INACTIVE') ORDER BY id LIMIT 16
+                """)) {
+            var ids = jdbc.queryForList("SELECT id FROM knowledge_chunk WHERE document_id=?", String.class, doc.get("id"));
+            es.post().uri("/{index}/_delete_by_query?refresh=true", index)
+                    .body(Map.of("query", Map.of("bool", Map.of("should", List.of(
+                            Map.of("term", Map.of("documentId", doc.get("id"))),
+                            Map.of("terms", Map.of("_id", ids))), "minimum_should_match", 1))))
+                    .retrieve().toBodilessEntity();
+            jdbc.update("UPDATE knowledge_document SET index_cleanup_pending=FALSE WHERE id=?", doc.get("id"));
+        }
+    }
+
+    private String section(String metadata) {
+        try {
+            return mapper.readTree(metadata).path("section").asText("正文");
+        } catch (Exception e) {
+            return "正文";
+        }
     }
 
     public String buildEvidence(List<Citation> citations) {
         if (citations.isEmpty()) return "未检索到足够证据，请勿编造参数。";
-        StringBuilder sb = new StringBuilder();
-        int i = 1;
+        StringBuilder text = new StringBuilder();
         for (Citation c : citations) {
-            sb.append('[').append(i++).append("] ")
-                    .append(c.documentTitle()).append(" / ").append(c.section())
-                    .append(" v").append(c.versionNo()).append('\n')
-                    .append(c.snippet()).append("\n\n");
+            text.append(c.documentTitle()).append(" / ").append(c.section()).append(" v")
+                    .append(c.versionNo()).append('\n').append(c.snippet()).append("\n\n");
         }
-        return sb.toString();
+        return text.toString();
     }
-
-    public void indexChunk(long chunkId, String title, String content, String metadataJson, String vectorId) {
-        try {
-            ensureIndex();
-            Map<String, Object> doc = new LinkedHashMap<>();
-            doc.put("chunkId", chunkId);
-            doc.put("title", title == null ? "" : title);
-            doc.put("content", content == null ? "" : content);
-            doc.put("metadata", metadataJson == null ? "{}" : metadataJson);
-            doc.put("vectorId", vectorId == null ? "" : vectorId);
-            send("PUT", "/" + INDEX + "/_doc/" + chunkId, mapper.writeValueAsString(doc));
-        } catch (Exception ignored) {
-        }
-        upsertLocalVector(chunkId, vectorId, content);
-    }
-
-    public void reindexAllChunks() {
-        for (Map<String, Object> row : loadChunks()) {
-            indexChunk(((Number) row.get("chunkId")).longValue(),
-                    String.valueOf(row.get("documentTitle")),
-                    String.valueOf(row.get("content")),
-                    String.valueOf(row.get("metadata")),
-                    row.get("vectorId") == null ? null : String.valueOf(row.get("vectorId")));
-        }
-    }
-
-    private List<Map<String, Object>> loadChunks() {
-        return jdbc.queryForList("""
-                SELECT c.id AS chunkId, c.content, c.metadata_json AS metadata, c.vector_id AS vectorId,
-                       d.id AS documentId, d.title AS documentTitle, d.source_type AS sourceType, d.source_id AS sourceId,
-                       d.version_no AS versionNo, kb.kb_code AS kbCode
-                FROM knowledge_chunk c
-                JOIN knowledge_document d ON d.id = c.document_id
-                JOIN knowledge_base kb ON kb.id = d.kb_id
-                WHERE d.parse_status='READY' AND kb.status='ENABLED'
-                """);
-    }
-
-    private Map<String, Object> findChunk(long chunkId) {
-        var rows = jdbc.queryForList("""
-                SELECT c.id AS chunkId, c.content, c.metadata_json AS metadata, c.vector_id AS vectorId,
-                       d.id AS documentId, d.title AS documentTitle, d.source_type AS sourceType, d.source_id AS sourceId,
-                       d.version_no AS versionNo, kb.kb_code AS kbCode
-                FROM knowledge_chunk c
-                JOIN knowledge_document d ON d.id = c.document_id
-                JOIN knowledge_base kb ON kb.id = d.kb_id
-                WHERE c.id=? AND d.parse_status='READY' AND kb.status='ENABLED'
-                """, chunkId);
-        return rows.isEmpty() ? null : rows.getFirst();
-    }
-
-    private Map<Long, Double> esRecall(String query, int size) {
-        Map<Long, Double> out = new LinkedHashMap<>();
-        try {
-            ensureIndex();
-            Map<String, Object> body = Map.of(
-                    "size", size,
-                    "query", Map.of("multi_match", Map.of(
-                            "query", query,
-                            "fields", List.of("content^3", "title^2", "metadata"),
-                            "fuzziness", "AUTO"
-                    ))
-            );
-            HttpResponse<String> r = send("POST", "/" + INDEX + "/_search", mapper.writeValueAsString(body));
-            if (r.statusCode() < 200 || r.statusCode() >= 300) return out;
-            JsonNode hits = mapper.readTree(r.body()).path("hits").path("hits");
-            double max = 0;
-            List<double[]> tmp = new ArrayList<>();
-            for (JsonNode h : hits) {
-                long id = h.path("_source").path("chunkId").asLong(h.path("_id").asLong());
-                double score = h.path("_score").asDouble(0);
-                max = Math.max(max, score);
-                tmp.add(new double[]{id, score});
-            }
-            for (double[] t : tmp) {
-                out.put((long) t[0], max <= 0 ? 0 : t[1] / max);
-            }
-        } catch (Exception ignored) {
-        }
-        return out;
-    }
-
-    private void ensureIndex() throws Exception {
-        HttpResponse<String> head = send("HEAD", "/" + INDEX, null);
-        if (head.statusCode() == 404) {
-            String mapping = """
-                    {"mappings":{"properties":{"chunkId":{"type":"long"},"title":{"type":"text"},"content":{"type":"text"},"metadata":{"type":"text"},"vectorId":{"type":"keyword"}}}}
-                    """;
-            send("PUT", "/" + INDEX, mapping);
-        }
-    }
-
-    private HttpResponse<String> send(String method, String path, String body) throws Exception {
-        var b = HttpRequest.newBuilder(URI.create(esBase + path)).header("Content-Type", "application/json");
-        b.method(method, body == null ? HttpRequest.BodyPublishers.noBody()
-                : HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
-        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
-    }
-
-    private Citation toCitation(Scored s, String query, double finalScore) {
-        Map<String, Object> row = s.row();
-        String meta = String.valueOf(row.get("metadata"));
-        String section = extract(meta, "section", "正文");
-        return new Citation(
-                ((Number) row.get("documentId")).longValue(),
-                ((Number) row.get("chunkId")).longValue(),
-                String.valueOf(row.get("documentTitle")),
-                String.valueOf(row.get("sourceType")),
-                row.get("sourceId") == null ? null : String.valueOf(row.get("sourceId")),
-                section,
-                String.valueOf(row.get("versionNo")),
-                String.valueOf(row.get("content")),
-                round(finalScore),
-                Map.of("bm25", round(s.bm25), "vector", round(s.vector), "es", round(s.es),
-                        "localVector", "64-dimensional deterministic character-hash prototype",
-                        "milvusMode", milvusEnabled ? "CONNECTION_SKELETON_ONLY" : "DISABLED",
-                        "minEvidenceScore", minEvidenceScore, "query", query)
-        );
-    }
-
-    private double rerank(String query, Scored s) {
-        double score = s.fused;
-        String content = String.valueOf(s.row().get("content"));
-        if (query.contains("内存") && content.contains("内存")) score += 0.15;
-        if (query.contains("退") && content.contains("退")) score += 0.12;
-        if (query.contains("支付") && content.contains("支付")) score += 0.12;
-        if (content.contains("32GB")) score += 0.05;
-        if (s.es > 0.5) score += 0.08;
-        return score;
-    }
-
-    private double keywordScore(String query, String doc) {
-        String d = doc.toLowerCase(Locale.ROOT);
-        String[] terms = query.toLowerCase(Locale.ROOT).split("[\\s,，。？?！!；;]+");
-        double hit = 0;
-        for (String t : terms) {
-            if (t.isBlank()) continue;
-            if (d.contains(t)) hit += 1.0;
-            if (t.length() >= 2) {
-                for (int i = 0; i < t.length() - 1; i++) {
-                    String bg = t.substring(i, i + 2);
-                    if (d.contains(bg)) hit += 0.35;
-                }
-            }
-        }
-        return Math.min(1.0, hit / Math.max(1, terms.length));
-    }
-
-    private double vectorScore(String query, String content, String vectorId, long chunkId) {
-        double[] qv = embed(query);
-        double[] dv = loadOrBuildEmbedding(chunkId, vectorId, content);
-        return cosine(qv, dv);
-    }
-
-    private void upsertLocalVector(long chunkId, String vectorId, String content) {
-        try {
-            double[] emb = embed(content);
-            String vid = vectorId == null || vectorId.isBlank() ? "vec-" + chunkId : vectorId;
-            Long existing = null;
-            try {
-                existing = jdbc.queryForObject("SELECT id FROM knowledge_vector WHERE chunk_id=?", Long.class, chunkId);
-            } catch (Exception ignored) {
-            }
-            String json = mapper.writeValueAsString(emb);
-            if (existing == null) {
-                jdbc.update("""
-                        INSERT INTO knowledge_vector(id,chunk_id,vector_id,dim,embedding_json,created_at)
-                        VALUES(?,?,?,?,?,CURRENT_TIMESTAMP(3))
-                        """, com.geekmall.common.domain.DistributedId.next(), chunkId, vid, emb.length, json);
-            } else {
-                jdbc.update("UPDATE knowledge_vector SET vector_id=?, dim=?, embedding_json=? WHERE chunk_id=?",
-                        vid, emb.length, json, chunkId);
-            }
-        } catch (Exception ignored) {
-        }
-    }
-
-    private double[] loadOrBuildEmbedding(long chunkId, String vectorId, String content) {
-        try {
-            var rows = jdbc.queryForList("SELECT embedding_json FROM knowledge_vector WHERE chunk_id=?", chunkId);
-            if (!rows.isEmpty()) {
-                JsonNode arr = mapper.readTree(String.valueOf(rows.getFirst().get("embedding_json")));
-                double[] out = new double[arr.size()];
-                for (int i = 0; i < arr.size(); i++) out[i] = arr.get(i).asDouble();
-                return out;
-            }
-        } catch (Exception ignored) {
-        }
-        upsertLocalVector(chunkId, vectorId, content);
-        return embed(content);
-    }
-
-    /** Deterministic 64-dimensional character-hash prototype for offline demo / CI; not an embedding model. */
-    static double[] embed(String text) {
-        double[] v = new double[64];
-        if (text == null || text.isBlank()) return v;
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (Character.isWhitespace(c)) continue;
-            int idx = Math.floorMod(c * 131 + i * 17, v.length);
-            v[idx] += 1.0;
-        }
-        double norm = 0;
-        for (double x : v) norm += x * x;
-        if (norm > 0) {
-            norm = Math.sqrt(norm);
-            for (int i = 0; i < v.length; i++) v[i] /= norm;
-        }
-        return v;
-    }
-
-    private static double cosine(double[] a, double[] b) {
-        int n = Math.min(a.length, b.length);
-        double dot = 0, na = 0, nb = 0;
-        for (int i = 0; i < n; i++) {
-            dot += a[i] * b[i];
-            na += a[i] * a[i];
-            nb += b[i] * b[i];
-        }
-        if (na == 0 || nb == 0) return 0;
-        return dot / (Math.sqrt(na) * Math.sqrt(nb));
-    }
-
-    private static String extract(String json, String key, String def) {
-        if (json == null) return def;
-        String token = "\"" + key + "\"";
-        int i = json.indexOf(token);
-        if (i < 0) return def;
-        int colon = json.indexOf(':', i);
-        int q1 = json.indexOf('"', colon + 1);
-        int q2 = json.indexOf('"', q1 + 1);
-        if (q1 < 0 || q2 < 0) return def;
-        return json.substring(q1 + 1, q2);
-    }
-
-    private static double round(double v) {
-        return Math.round(v * 10000.0) / 10000.0;
-    }
-
-    private record Scored(Map<String, Object> row, double fused, double bm25, double vector, double es) {}
 
     public record Citation(long documentId, long chunkId, String documentTitle, String sourceType, String sourceId,
                            String section, String versionNo, String snippet, double score, Map<String, Object> debug) {
         public Map<String, Object> asMap() {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("documentId", documentId);
-            m.put("chunkId", chunkId);
-            m.put("documentTitle", documentTitle);
-            m.put("sourceType", sourceType);
-            m.put("sourceId", sourceId);
-            m.put("section", section);
-            m.put("version", versionNo);
-            m.put("snippet", snippet);
-            m.put("score", score);
-            return m;
+            var result = new LinkedHashMap<String, Object>();
+            result.put("documentId", documentId);
+            result.put("chunkId", chunkId);
+            result.put("documentTitle", documentTitle);
+            result.put("sourceType", sourceType);
+            result.put("sourceId", sourceId);
+            result.put("section", section);
+            result.put("version", versionNo);
+            result.put("scope", debug.get("scope"));
+            result.put("snippet", snippet);
+            result.put("score", score);
+            return result;
         }
     }
 }

@@ -1,0 +1,284 @@
+{
+  "command": "mvn -B -ntp -T 1 -Pintegration verify",
+  "remoteVerification": "ci.json records independent Java 21 fresh-checkout results",
+  "modules": [
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 2
+      },
+      "module": "geek-aftersale-service"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-aftersale-service"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 47
+      },
+      "module": "geek-ai"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 17
+      },
+      "module": "geek-ai"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 1
+      },
+      "module": "geek-auth-system"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-auth-system"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 2
+      },
+      "module": "geek-common"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-common"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 1
+      },
+      "module": "geek-gateway"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-gateway"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 7
+      },
+      "module": "geek-inventory-fulfillment"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-inventory-fulfillment"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 2
+      },
+      "module": "geek-marketing"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 11
+      },
+      "module": "geek-marketing"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 2
+      },
+      "module": "geek-member"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-member"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 10
+      },
+      "module": "geek-merchant-product"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-merchant-product"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 1
+      },
+      "module": "geek-search-recommend"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-search-recommend"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 1
+      },
+      "module": "geek-service-center"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-service-center"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 1
+      },
+      "module": "geek-settlement"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 0
+      },
+      "module": "geek-settlement"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 16
+      },
+      "module": "geek-trade"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0,
+        "tests": 20
+      },
+      "module": "geek-trade"
+    }
+  ],
+  "firstCleanAttempt": "Failed on prior approval assertion; same-token replay assertion corrected and full reactor rerun successfully",
+  "java": "25 (release 21)",
+  "totals": {
+    "failsafe": {
+      "failures": 0,
+      "skipped": 0,
+      "errors": 0,
+      "tests": 48
+    },
+    "surefire": {
+      "failures": 0,
+      "skipped": 0,
+      "errors": 0,
+      "tests": 93
+    }
+  },
+  "date": "2026-11-14",
+  "sourceRevision": "1d8a21da357939c91ba24b450056b14ce9550f92"
+}

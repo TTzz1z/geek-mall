@@ -1,15 +1,19 @@
 package com.geekmall.inventory;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.geekmall.common.api.ApiResponse;
 import com.geekmall.common.api.BusinessException;
 import com.geekmall.common.domain.DistributedId;
 import com.geekmall.common.security.AuthPrincipal;
 import com.geekmall.common.security.TenantContext;
+import com.geekmall.common.web.InternalRestClient;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -20,6 +24,8 @@ import org.springframework.web.client.RestClient;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.time.Instant;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -27,16 +33,16 @@ class FulfillmentController {
     private final JdbcTemplate jdbc;
     private final String internalKey;
     private final RestClient aftersaleClient;
-    private final RestClient tradeClient;
+    private final ObjectMapper mapper;
 
     FulfillmentController(JdbcTemplate jdbc,
                           @Value("${geek.internal-key}") String internalKey,
                           @Value("${geek.aftersale-service-url:http://localhost:9008}") String aftersaleUrl,
-                          @Value("${geek.trade-service-url:http://localhost:9005}") String tradeUrl) {
+                          ObjectMapper mapper) {
         this.jdbc = jdbc;
         this.internalKey = internalKey;
-        this.aftersaleClient = RestClient.builder().baseUrl(aftersaleUrl).build();
-        this.tradeClient = RestClient.builder().baseUrl(tradeUrl).build();
+        this.aftersaleClient = InternalRestClient.create(aftersaleUrl);
+        this.mapper = mapper;
     }
 
     @PostMapping("/internal/fulfillments")
@@ -47,8 +53,15 @@ class FulfillmentController {
         if (!old.isEmpty()) return ok(old.getFirst(), r);
         long id = DistributedId.next();
         String no = "FF" + id;
-        jdbc.update("INSERT INTO inventory_fulfillment(id,fulfillment_no,order_no,user_id,merchant_id,warehouse_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'PICKING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
-                id, no, b.orderNo(), b.userId(), b.merchantId(), b.warehouseId());
+        try {
+            jdbc.update("INSERT INTO inventory_fulfillment(id,fulfillment_no,order_no,user_id,merchant_id,warehouse_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'PICKING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                    id, no, b.orderNo(), b.userId(), b.merchantId(), b.warehouseId());
+        } catch (DuplicateKeyException duplicate) {
+            return ok(jdbc.queryForMap("""
+                    SELECT fulfillment_no AS fulfillmentNo FROM inventory_fulfillment
+                    WHERE order_no=? AND warehouse_id=? FOR UPDATE
+                    """, b.orderNo(), b.warehouseId()), r);
+        }
         for (Item i : b.items()) {
             jdbc.update("INSERT INTO inventory_fulfillment_item(id,fulfillment_id,order_item_id,sku_id,quantity) VALUES(?,?,?,?,?)",
                     DistributedId.next(), id, i.orderItemId(), i.skuId(), i.quantity());
@@ -116,7 +129,7 @@ class FulfillmentController {
         String status = allShipped ? "SHIPPED" : "PARTIAL_SHIPPED";
         jdbc.update("UPDATE inventory_fulfillment SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", status, fulfillmentId);
         if (allShipped) {
-            notifyTradeOrder(String.valueOf(f.get("order_no")), "SHIPPED");
+            notifyIfOrderReady(String.valueOf(f.get("order_no")), "SHIPPED");
         }
         return ok(Map.of("packageNo", packageNo, "status", status), r);
     }
@@ -179,14 +192,13 @@ class FulfillmentController {
         String status = allShipped ? "SHIPPED" : "PARTIAL_SHIPPED";
         jdbc.update("UPDATE inventory_fulfillment SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", status, fulfillmentId);
         if (allShipped) {
-            notifyTradeOrder(String.valueOf(f.get("order_no")), "SHIPPED");
+            notifyIfOrderReady(String.valueOf(f.get("order_no")), "SHIPPED");
         }
         return ok(Map.of("packageNo", packageNo, "status", status), r);
     }
 
     @PostMapping("/warehouse/fulfillments/{no}/receive-return")
     @PreAuthorize("hasRole('MERCHANT')")
-    @Transactional
     ApiResponse<Map<String, Object>> warehouseReceive(@PathVariable String no, @RequestParam String aftersaleNo, HttpServletRequest r) {
         long merchant = TenantContext.requireMerchantId();
         jdbc.queryForMap("SELECT id FROM inventory_fulfillment WHERE fulfillment_no=? AND merchant_id=?", no, merchant);
@@ -230,25 +242,39 @@ class FulfillmentController {
         jdbc.update("UPDATE inventory_package SET status='RECEIVED',received_at=CURRENT_TIMESTAMP WHERE id=?", row.get("id"));
         track(((Number) row.get("id")).longValue(), "RECEIVED", "用户确认收货");
         long fulfillmentId = ((Number) row.get("fulfillmentId")).longValue();
-        boolean allReceived = Boolean.TRUE.equals(jdbc.queryForObject(
-                "SELECT COUNT(*)=0 FROM inventory_package WHERE fulfillment_id=? AND status<>'RECEIVED'", Boolean.class, fulfillmentId));
+        boolean allReceived = Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT COUNT(*)=0 FROM inventory_package p JOIN inventory_fulfillment f ON f.id=p.fulfillment_id
+                WHERE p.fulfillment_id=? AND (p.status<>'RECEIVED' OR f.status NOT IN ('SHIPPED','COMPLETED'))
+                """, Boolean.class, fulfillmentId));
         if (allReceived) {
             jdbc.update("UPDATE inventory_fulfillment SET status='COMPLETED',updated_at=CURRENT_TIMESTAMP WHERE id=?", fulfillmentId);
-            notifyTradeOrder(String.valueOf(row.get("orderNo")), "COMPLETED");
+            notifyIfOrderReady(String.valueOf(row.get("orderNo")), "COMPLETED");
         }
         return ok(Map.of("packageNo", no, "status", "RECEIVED", "idempotentReplay", false), r);
     }
 
+    private void notifyIfOrderReady(String orderNo, String status) {
+        var states = jdbc.queryForList("""
+                SELECT status FROM inventory_fulfillment WHERE order_no=? ORDER BY id FOR UPDATE
+                """, String.class, orderNo);
+        Set<String> accepted = "SHIPPED".equals(status) ? Set.of("SHIPPED", "COMPLETED") : Set.of("COMPLETED");
+        if (!accepted.containsAll(states)) return;
+        notifyTradeOrder(orderNo, status);
+    }
+
     private void notifyTradeOrder(String orderNo, String status) {
+        String eventId = UUID.randomUUID().toString();
+        String type = "inventory.fulfillment.status-changed.v1";
         try {
-            tradeClient.post()
-                    .uri(uri -> uri.path("/api/v1/internal/trade/orders/{orderNo}/fulfillment-status")
-                            .queryParam("status", status).build(orderNo))
-                    .header("X-Internal-Key", internalKey)
-                    .retrieve()
-                    .toBodilessEntity();
-        } catch (Exception e) {
-            throw new BusinessException("FL50301", "回写交易订单状态失败: " + e.getMessage());
+            String payload = mapper.writeValueAsString(Map.of("eventId", eventId, "eventType", type,
+                    "occurredAt", Instant.now().toString(), "producer", "geek-inventory-fulfillment",
+                    "aggregateId", orderNo, "version", 1, "payload", Map.of("orderNo", orderNo, "status", status)));
+            jdbc.update("""
+                    INSERT INTO event_outbox(id,event_id,aggregate_type,aggregate_id,event_type,payload_json,status,created_at)
+                    VALUES(?,?,'TRADE_ORDER',?,?,?,'PENDING',CURRENT_TIMESTAMP)
+                    """, DistributedId.next(), eventId, orderNo, type, payload);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException(e);
         }
     }
 
