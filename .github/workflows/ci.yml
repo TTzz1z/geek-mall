@@ -106,20 +106,8 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.observability.yml config --quiet
       - name: Contract schema samples
         run: |
-          python3 - <<'PY'
-          import json, pathlib, sys
-          schema=json.loads(pathlib.Path('contracts/events/domain-event.schema.json').read_text(encoding='utf-8'))
-          required=schema['required']; allowed=set(schema['properties']['eventType']['enum'])
-          fail=0
-          for p in pathlib.Path('contracts/events/samples').glob('*.json'):
-            obj=json.loads(p.read_text(encoding='utf-8'))
-            missing=[f for f in required if f not in obj]
-            if missing or obj.get('eventType') not in allowed:
-              print('FAIL', p, missing, obj.get('eventType')); fail+=1
-            else:
-              print('PASS', p.name)
-          sys.exit(fail)
-          PY
+          python3 -m pip install jsonschema==4.23.0
+          python3 scripts/event-contract-check.py
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -134,10 +122,11 @@ jobs:
             printf '{"Results":[]}\n' > "$RUNNER_TEMP/trivy-base.json"
           else
             git worktree add --detach "$RUNNER_TEMP/trivy-base" "$BASE_SHA"
+            # Remove cached project SNAPSHOTs before building this revision.
+            rm -rf "$HOME/.m2/repository/com/geekmall"
             mvn -B -ntp -f "$RUNNER_TEMP/trivy-base/backend/pom.xml" -DskipTests install
             echo 'available=true' >> "$GITHUB_OUTPUT"
           fi
-          mvn -B -ntp -f backend/pom.xml -DskipTests install
       - name: Scan baseline dependencies
         if: steps.trivy-baseline.outputs.available == 'true'
         uses: aquasecurity/trivy-action@v0.36.0
@@ -151,8 +140,10 @@ jobs:
           output: ${{ runner.temp }}/trivy-base.json
           exit-code: '0'
           skip-dirs: '**/target'
-        env:
-          TRIVY_OFFLINE_SCAN: 'true'
+      - name: Build current dependencies after baseline scan
+        run: |
+          rm -rf "$HOME/.m2/repository/com/geekmall"
+          mvn -B -ntp -f backend/pom.xml -DskipTests install
       - name: Scan current dependencies
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -167,7 +158,8 @@ jobs:
           skip-dirs: '**/target'
           skip-setup-trivy: ${{ steps.trivy-baseline.outputs.available == 'true' }}
         env:
-          TRIVY_OFFLINE_SCAN: 'true'
           TRIVY_SKIP_DB_UPDATE: ${{ steps.trivy-baseline.outputs.available == 'true' }}
+      - name: Verify vulnerability regression comparison
+        run: python3 scripts/test_trivy_regression_gate.py
       - name: Block new HIGH and CRITICAL dependency findings
-        run: python3 scripts/trivy-regression-gate.py "$RUNNER_TEMP/trivy-base.json" "$RUNNER_TEMP/trivy-head.json"
+        run: python3 scripts/trivy-regression-gate.py "$RUNNER_TEMP/trivy-base.json" "$RUNNER_TEMP/trivy-head.json" "$RUNNER_TEMP/trivy-base" "$GITHUB_WORKSPACE"

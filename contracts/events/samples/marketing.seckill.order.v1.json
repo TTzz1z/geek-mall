@@ -1,0 +1,19 @@
+{
+  "eventId": "evt-demo-0001",
+  "eventType": "marketing.seckill.order.v1",
+  "occurredAt": "2026-07-16T12:00:00Z",
+  "producer": "geek-marketing",
+  "aggregateId": "1",
+  "version": 1,
+  "payload": {
+    "seckillOrderId": 1,
+    "sessionId": 1,
+    "skuId": 1,
+    "userId": 1,
+    "quantity": 1,
+    "requestId": "req1",
+    "price": 100,
+    "addressId": 1,
+    "expiresAt": "2026-07-16T12:00:00Z"
+  }
+}

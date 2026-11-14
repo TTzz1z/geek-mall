@@ -64,7 +64,7 @@ Geek Mall 采用前端多应用、Gateway 和业务域微服务结构。Docker �
 - `contracts/events/samples/*.json`；
 - `contracts/http/checkout-preview.request.json`。
 
-契约目录只覆盖少量关键样例，不是完整 OpenAPI。事件发布/消费需要同时维持事件 ID 幂等和 schema 兼容。
+V1 消费者兼容 schema 保持历史约束；`producer-event.schema.json` 为当前生产者提供更严格的字段校验。库存扣减和售后退款完成事件为保留类型，当前未找到对应生产者。契约样例不是完整 OpenAPI；应同时验证实际生产者、消费者、事件 ID 幂等与 schema 兼容。
 
 ## 部署与配置
 
@@ -108,7 +108,7 @@ docker compose up -d --build
 | 后端 | `mvn -B -ntp -f backend/pom.xml -Pintegration verify` | 单元测试与基于 Docker 的 MySQL 8.4、RabbitMQ、Agent 集成测试 |
 | 前端 | `cd frontend; pnpm typecheck; pnpm test; pnpm build` | 类型、Vitest 和构建 |
 | Compose | `docker compose -f docker-compose.yml config --quiet` | 配置展开校验 |
-| 契约 | `scripts/contract-check.ps1` | 事件 schema 与样例 |
+| 契约 | `python scripts/event-contract-check.py` | 安装 jsonschema 后验证历史和生产者 schema、样例及缺字段反例；`scripts/contract-check.ps1` 另验证运行中服务 |
 | API 主链 | `scripts/e2e-core-flow.ps1` | 交易、支付、商家隔离、售后和 AI 最小断言 |
 | 并发专项 | `scripts/concurrency-verify.ps1` | 幂等下单及精确 Maven 并发/回调测试 |
 | Playwright API | `cd e2e; pnpm test:api` | 不启动浏览器的 API smoke |
@@ -127,7 +127,7 @@ docker compose up -d --build
 
 独立红队用例位于 `e2e/ai-redteam`。设置隔离环境的 `AI_REDTEAM_URL` 和普通用户的 `AI_REDTEAM_TOKEN`，运行 `npx --yes promptfoo@0.125.1 eval --config e2e/ai-redteam/promptfooconfig.yaml --no-cache`。
 
-Trivy 使用同一份漏洞库扫描当前版本和基准提交。PR 以目标分支提交为基准，推送以前一个提交为基准。新出现的 HIGH、CRITICAL 以及从 HIGH 升为 CRITICAL 的结果会阻断 CI。
+Trivy 在安装当前版本之前扫描基准，并在每次安装前清除 CI runner 的项目 SNAPSHOT 缓存，使用同一份漏洞库扫描当前版本和基准提交。PR 以目标分支提交为基准，推送以前一个提交为基准。新出现的 HIGH、CRITICAL 以及从 HIGH 升为 CRITICAL 的结果会阻断 CI。
 
 ## 可观测性与运维
 
@@ -142,5 +142,5 @@ Trivy 使用同一份漏洞库扫描当前版本和基准提交。PR 以目标�
 - HTTP/事件契约只覆盖少量样例，缺少完整 OpenAPI、生成客户端和兼容性门禁。
 - Playwright 当前是 API smoke，缺少浏览器级主路径、视觉回归和移动真机自动化。
 - 微信/支付宝、发票、退款到账和仓储物流仍是模拟或骨架，不可视为生产集成。
-- AI 本地检索不是 Embedding/Milvus 实现；远程模型质量、供应商故障、数据脱敏和账单对账仍需补齐。
+- AI 支持配置 1024 维 Embedding 和 Elasticsearch 混合检索，未配置时回退 BM25；当前知识查询范围为公开 PRODUCT/RULE。远程模型质量、供应商故障、数据脱敏和账单对账仍需补齐。
 - 本地观测与备份配置尚未达到生产 SLO、审计和灾备要求。

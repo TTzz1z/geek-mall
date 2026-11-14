@@ -1,0 +1,9 @@
+{
+  "eventId": "evt-reserved-0001",
+  "eventType": "aftersale.refund.completed.v1",
+  "aggregateId": "reserved",
+  "payload": {},
+  "producer": "reserved",
+  "version": 1,
+  "occurredAt": "2026-07-16T12:00:00Z"
+}
