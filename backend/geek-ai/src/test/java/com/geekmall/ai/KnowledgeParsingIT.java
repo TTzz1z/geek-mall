@@ -18,7 +18,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Testcontainers
 class KnowledgeParsingIT {
-    @Container static final GenericContainer<?> minio = new GenericContainer<>("minio/minio:RELEASE.2025-04-22T22-12-26Z")
+    // Docker Hub no longer serves this release. Pin the verified existing distribution by digest.
+    private static final String MINIO_IMAGE = System.getProperty("minio.image",
+            "ghcr.io/coollabsio/minio@sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68");
+    @Container static final GenericContainer<?> minio = new GenericContainer<>(MINIO_IMAGE)
             .withExposedPorts(9000).withCommand("server", "/data")
             .withEnv("MINIO_ROOT_USER", "rag-validation").withEnv("MINIO_ROOT_PASSWORD", "rag-validation-local-only")
             .waitingFor(Wait.forHttp("/minio/health/ready").forPort(9000));
