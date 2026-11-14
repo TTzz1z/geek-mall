@@ -20,6 +20,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
@@ -32,6 +40,7 @@ class KnowledgeRetrievalIT {
     @Container static final GenericContainer<?> elastic = new GenericContainer<>("docker.elastic.co/elasticsearch/elasticsearch:8.17.3")
             .withExposedPorts(9200).withEnv("discovery.type", "single-node")
             .withEnv("xpack.security.enabled", "false").withEnv("ES_JAVA_OPTS", "-Xms384m -Xmx384m")
+            .withEnv("action.auto_create_index", "false")
             .waitingFor(Wait.forHttp("/").forStatusCode(200)).withStartupTimeout(Duration.ofMinutes(3));
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -134,5 +143,81 @@ class KnowledgeRetrievalIT {
         assertTrue(rag.retrieve("回归专用火星键盘", 5).stream().noneMatch(c -> "40401".equals(c.sourceId())));
         rag.indexPending();
         assertEquals(0, ingest.countActiveBySource("40401"));
+    }
+
+    @Test
+    @Order(3)
+    void deletionBetweenProbeAndBulkWithAutoCreationDisabledRetriesAllSources() throws Exception {
+        recoverDeletionDuringBulk(false, 40501);
+    }
+
+    @Test
+    @Order(4)
+    void deletionBetweenProbeAndBulkWithAutoCreationEnabledDetectsNewPhysicalIdentity() throws Exception {
+        recoverDeletionDuringBulk(true, 40601);
+    }
+
+    private void recoverDeletionDuringBulk(boolean allowAutoCreation, long source) throws Exception {
+        var jdbc = database();
+        var direct = RestClient.create(elasticUrl());
+        direct.put().uri("/_cluster/settings").body(Map.of("transient", Map.of("action.auto_create_index", allowAutoCreation)))
+                .retrieve().toBodilessEntity();
+        String index = "rag-bulk-loss-" + source;
+        var intercept = new AtomicBoolean();
+        var failedItemStatus = new AtomicInteger();
+        var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+        var proxy = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        proxy.createContext("/", exchange -> {
+            try {
+                if (exchange.getRequestURI().getPath().endsWith("/_bulk") && intercept.compareAndSet(true, false)) {
+                    direct.delete().uri("/" + index).retrieve().toBodilessEntity();
+                }
+                byte[] body = exchange.getRequestBody().readAllBytes();
+                var request = HttpRequest.newBuilder(URI.create(elasticUrl() + exchange.getRequestURI()))
+                        .timeout(Duration.ofSeconds(20)).method(exchange.getRequestMethod(), HttpRequest.BodyPublishers.ofByteArray(body));
+                String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
+                if (contentType != null) request.header("Content-Type", contentType);
+                var response = client.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
+                if (exchange.getRequestURI().getPath().endsWith("/_bulk") && failedItemStatus.get() == 0) {
+                    var json = mapper.readTree(response.body());
+                    if (json.path("errors").asBoolean()) failedItemStatus.set(json.path("items").path(0).path("index").path("status").asInt(response.statusCode()));
+                }
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(response.statusCode(), response.body().length);
+                exchange.getResponseBody().write(response.body());
+            } catch (Exception error) {
+                exchange.sendResponseHeaders(500, -1);
+            } finally { exchange.close(); }
+        });
+        proxy.start();
+        try {
+            String proxyUrl = "http://127.0.0.1:" + proxy.getAddress().getPort();
+            var rag = new HybridRagService(jdbc, mapper, new EmbeddingClient("", "unused", ""), proxyUrl, index);
+            var ingest = new KnowledgeIngestService(jdbc, mapper, mock(KnowledgeDocumentParser.class),
+                    new DataSourceTransactionManager(java.util.Objects.requireNonNull(jdbc.getDataSource())));
+            ingest.syncProduct(Map.of("id", source, "title", "UUIDcandidate" + source, "subtitle", "original evidence"), "UPSERT");
+            ingest.syncProduct(Map.of("id", source + 1, "title", "UUIDstablelemon" + source, "subtitle", "independent persisted evidence"), "UPSERT");
+            rag.indexPending();
+            assertTrue(rag.indexingComplete());
+            String originalUuid = jdbc.queryForObject("SELECT index_uuid FROM knowledge_index_state WHERE index_name=?", String.class, index);
+            ingest.syncProduct(Map.of("id", source, "title", "UUIDcandidate" + source, "subtitle", "replacement evidence"), "UPSERT");
+            intercept.set(true);
+            rag.indexPending();
+            assertFalse(rag.indexingComplete());
+            if (!allowAutoCreation) assertEquals(404, failedItemStatus.get(), "The disabled auto-create policy must reject the missing target");
+            assertEquals(1, ingest.countActiveBySource(String.valueOf(source)));
+            jdbc.update("UPDATE knowledge_chunk SET index_retry_at=NULL");
+            // A fresh service proves that recovery does not depend on a process-local UUID cache.
+            var restarted = new HybridRagService(jdbc, mapper, new EmbeddingClient("", "unused", ""), proxyUrl, index);
+            for (int attempt = 0; attempt < 4 && !restarted.indexingComplete(); attempt++) restarted.indexPending();
+            assertTrue(restarted.indexingComplete(), () -> restarted.indexStatus().toString());
+            assertNotEquals(originalUuid, jdbc.queryForObject("SELECT index_uuid FROM knowledge_index_state WHERE index_name=?", String.class, index));
+            assertTrue(restarted.retrieve("UUIDstablelemon" + source, 5).stream().anyMatch(c -> String.valueOf(source + 1).equals(c.sourceId())));
+            assertEquals("2", restarted.retrieve("UUIDcandidate" + source, 5).stream().filter(c -> String.valueOf(source).equals(c.sourceId())).findFirst().orElseThrow().versionNo());
+        } finally {
+            proxy.stop(0);
+            direct.put().uri("/_cluster/settings").body(Map.of("transient", Map.of("action.auto_create_index", false)))
+                    .retrieve().toBodilessEntity();
+        }
     }
 }

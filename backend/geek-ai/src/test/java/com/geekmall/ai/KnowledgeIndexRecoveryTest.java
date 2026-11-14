@@ -25,6 +25,10 @@ class KnowledgeIndexRecoveryTest {
     volatile boolean exists;
     volatile boolean failBulk;
     volatile boolean loseCreateResponse;
+    volatile boolean recreateDuringBulk;
+    volatile boolean ownedIndex = true;
+    volatile String indexUuid = "initial-index";
+    final java.util.List<String> bulkBodies = new java.util.concurrent.CopyOnWriteArrayList<>();
     volatile int bulkCalls;
 
     @BeforeEach
@@ -40,7 +44,7 @@ class KnowledgeIndexRecoveryTest {
                 CREATE TABLE knowledge_chunk(id BIGINT PRIMARY KEY,document_id BIGINT,chunk_no INT,content CLOB,
                   metadata_json VARCHAR(500),vector_id VARCHAR(64),index_profile VARCHAR(190),index_retry_at TIMESTAMP);
                 CREATE TABLE knowledge_index_state(index_name VARCHAR(128) PRIMARY KEY,generation BIGINT NOT NULL,
-                  model_profile VARCHAR(190),status VARCHAR(32),last_error VARCHAR(255),updated_at TIMESTAMP);
+                  model_profile VARCHAR(190),status VARCHAR(32),last_error VARCHAR(255),updated_at TIMESTAMP,index_uuid VARCHAR(64));
                 INSERT INTO knowledge_base VALUES(1,'PRODUCT','PUBLIC','ENABLED');
                 INSERT INTO knowledge_document(id,kb_id,source_type,source_id,title,parse_status,version_no,activation_status)
                   VALUES(10,1,'PRODUCT_SPU','1001','old active','READY',1,'ACTIVE');
@@ -51,9 +55,18 @@ class KnowledgeIndexRecoveryTest {
             String path = exchange.getRequestURI().getPath();
             int code = 200;
             String response = "{}";
+            String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             if (exchange.getRequestMethod().equals("HEAD")) code = exists ? 200 : 404;
+            else if (exchange.getRequestMethod().equals("GET") && path.equals("/kb")) {
+                code = exists ? 200 : 404;
+                response = "{\"kb\":{\"settings\":{\"index\":{\"uuid\":\"" + indexUuid
+                        + "\"}},\"mappings\":{\"_meta\":{\"knowledgeOwner\":\"" + (ownedIndex ? "kb" : "") + "\"}}}}";
+            }
+            else if (exchange.getRequestMethod().equals("DELETE") && path.equals("/kb")) exists = false;
             else if (exchange.getRequestMethod().equals("PUT")) {
                 exists = true;
+                indexUuid = UUID.randomUUID().toString();
+                ownedIndex = true;
                 if (loseCreateResponse) {
                     loseCreateResponse = false;
                     code = 500;
@@ -62,9 +75,14 @@ class KnowledgeIndexRecoveryTest {
             }
             else if (path.endsWith("/_bulk")) {
                 bulkCalls++;
+                bulkBodies.add(requestBody);
+                if (recreateDuringBulk) {
+                    recreateDuringBulk = false;
+                    indexUuid = UUID.randomUUID().toString();
+                    ownedIndex = false;
+                }
                 response = failBulk ? "{\"errors\":true}" : "{\"errors\":false}";
             } else if (path.endsWith("/_search")) response = "{\"hits\":{\"hits\":[{\"_id\":\"11\"}]}}";
-            exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             byte[] body = response.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(code, exchange.getRequestMethod().equals("HEAD") ? -1 : body.length);
@@ -129,6 +147,28 @@ class KnowledgeIndexRecoveryTest {
         rag.indexPending();
         assertTrue(bulkCalls > previouslyIndexed);
         assertTrue(rag.indexingComplete());
+    }
+
+    @Test
+    void automaticRecreationBetweenProbeAndBulkInvalidatesEveryOldSuccessfulChunk() {
+        jdbc.update("""
+                INSERT INTO knowledge_document(id,kb_id,source_type,source_id,title,parse_status,version_no,activation_status)
+                VALUES(20,1,'PRODUCT_SPU','1002','independent active source','READY',1,'ACTIVE')
+                """);
+        jdbc.update("INSERT INTO knowledge_chunk(id,document_id,chunk_no,content,metadata_json) VALUES(21,20,1,'independent evidence','{}')");
+        rag.indexPending();
+        assertTrue(rag.indexingComplete());
+        ingest.syncProduct(Map.of("id", 1001, "title", "new version"), "UPSERT");
+        recreateDuringBulk = true;
+        rag.indexPending();
+        assertFalse(rag.indexingComplete(), "A newly auto-created index cannot reuse previous SQL success markers");
+        assertEquals("ACTIVE", status(10), "An unverified bulk cannot activate its candidate");
+        assertNull(jdbc.queryForObject("SELECT index_profile FROM knowledge_chunk WHERE id=21", String.class));
+        jdbc.update("UPDATE knowledge_chunk SET index_retry_at=NULL");
+        rag.indexPending();
+        assertTrue(rag.indexingComplete());
+        assertTrue(bulkBodies.getLast().contains("\"_id\":21"), "An independent active source must be rebuilt too");
+        assertTrue(ownedIndex, "Restore the explicit keyword/vector mapping after automatic creation");
     }
 
     @Test

@@ -142,14 +142,16 @@ public class HybridRagService {
     double minimumSimilarity() { return minimumSimilarity; }
 
     boolean indexingComplete() {
-        // A successful SQL marker alone cannot prove that Elasticsearch still exists.
+        // A reusable ES name alone cannot prove that SQL success belongs to this physical index.
+        IndexIdentity physical;
         try {
-            es.head().uri("/{index}", index).retrieve().toBodilessEntity();
+            physical = probeIndex();
         } catch (RuntimeException e) {
             return false;
         }
-        var states = jdbc.queryForList("SELECT generation,model_profile FROM knowledge_index_state WHERE index_name=?", index);
+        var states = jdbc.queryForList("SELECT generation,model_profile,index_uuid FROM knowledge_index_state WHERE index_name=?", index);
         if (states.isEmpty() || !embeddingModel().equals(states.getFirst().get("model_profile"))) return false;
+        if (physical == null || !physical.owned() || !physical.uuid().equals(states.getFirst().get("index_uuid"))) return false;
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 SELECT NOT EXISTS(
                   SELECT 1 FROM knowledge_chunk c JOIN knowledge_document d ON d.id=c.document_id
@@ -196,7 +198,8 @@ public class HybridRagService {
         List<Map<String, Object>> rows = List.of();
         try {
             // Probe before selecting work: a deleted ES index must reset already-successful SQL tasks.
-            String profile = ensureIndex();
+            IndexSnapshot target = ensureIndex();
+            String profile = target.profile();
             cleanupRetired();
             rows = jdbc.queryForList("""
                 SELECT c.id,c.content,d.id AS document_id,d.title,k.kb_code,k.scope_type
@@ -231,11 +234,17 @@ public class HybridRagService {
                     .contentType(org.springframework.http.MediaType.parseMediaType("application/x-ndjson"))
                     .body(bulk.toString().getBytes(StandardCharsets.UTF_8)).retrieve().body(JsonNode.class);
                 if (result == null || result.path("errors").asBoolean(true)) throw new IllegalStateException("bulk indexing failed");
+                IndexIdentity afterBulk = probeIndex();
+                if (afterBulk == null || !afterBulk.owned() || !target.uuid().equals(afterBulk.uuid())) {
+                    invalidateIdentity(target);
+                    throw new IllegalStateException("physical index changed during bulk indexing");
+                }
             }
             List<Map<String, Object>> indexed = rows;
             tx.executeWithoutResult(status -> {
                 var state = lockState();
-                if (!profile.equals(profile(((Number) state.get("generation")).longValue()))) return;
+                if (!profile.equals(profile(((Number) state.get("generation")).longValue()))
+                        || !target.uuid().equals(state.get("index_uuid"))) return;
                 for (var row : indexed) {
                     jdbc.update("UPDATE knowledge_chunk SET index_profile=?,index_retry_at=NULL WHERE id=?", profile, row.get("id"));
                     // Off-sale can race an in-flight bulk write. Keep its cleanup retry durable.
@@ -302,6 +311,7 @@ public class HybridRagService {
         var result = new LinkedHashMap<String, Object>();
         result.put("index", index);
         result.put("generation", generation);
+        result.put("indexUuid", state.get("index_uuid"));
         result.put("model", state.get("model_profile"));
         result.put("status", state.get("status"));
         result.put("pendingChunks", pendingCount(profile(generation)));
@@ -337,27 +347,43 @@ public class HybridRagService {
                 """);
     }
 
-    private String ensureIndex() {
-        registerState();
-        boolean missing = false;
+    private IndexIdentity probeIndex() {
         try {
-            es.head().uri("/{index}", index).retrieve().toBodilessEntity();
+            JsonNode response = es.get().uri("/{index}?filter_path=*.settings.index.uuid,*.mappings._meta.knowledgeOwner", index)
+                    .retrieve().body(JsonNode.class);
+            JsonNode details = response == null ? mapper.createObjectNode() : response.path(index);
+            String uuid = details.path("settings").path("index").path("uuid").asText("");
+            if (uuid.isBlank()) throw new IllegalStateException("missing physical Elasticsearch index identity");
+            return new IndexIdentity(uuid, index.equals(details.path("mappings").path("_meta").path("knowledgeOwner").asText()));
         } catch (RestClientResponseException e) {
-            if (e.getStatusCode().value() != 404) throw e;
-            missing = true;
+            if (e.getStatusCode().value() == 404) return null;
+            throw e;
         }
-        boolean recreate = missing;
+    }
+
+    private IndexSnapshot ensureIndex() {
+        registerState();
+        IndexIdentity physical = probeIndex();
         // Invalidate SQL success durably before any external creation. A lost PUT response or
         // process exit must leave retryable chunks even when ES already committed the empty index.
-        String currentProfile = tx.execute(status -> {
+        IndexPreparation prepared = tx.execute(status -> {
             var state = lockState();
+            boolean recreate = physical == null || !physical.owned() || !physical.uuid().equals(state.get("index_uuid"));
             if (recreate || !embeddingModel().equals(state.get("model_profile"))
                     || ((Number) state.get("generation")).longValue() == 0) resetGeneration();
-            return profile(((Number) lockState().get("generation")).longValue());
+            if (recreate) jdbc.update("UPDATE knowledge_index_state SET index_uuid=NULL WHERE index_name=?", index);
+            return new IndexPreparation(profile(((Number) lockState().get("generation")).longValue()), recreate);
         });
-        if (recreate) {
+        if (prepared.recreate()) {
+            // An automatically recreated index has dynamic mappings. Replace this SQL-derived
+            // index explicitly instead of merely adopting its UUID and leaving broken filters.
+            if (physical != null) {
+                try { es.delete().uri("/{index}", index).retrieve().toBodilessEntity(); }
+                catch (RestClientResponseException e) { if (e.getStatusCode().value() != 404) throw e; }
+            }
             try {
-                es.put().uri("/{index}", index).body(Map.of("mappings", Map.of("properties", Map.of(
+                es.put().uri("/{index}", index).body(Map.of("mappings", Map.of(
+                    "_meta", Map.of("knowledgeOwner", index), "properties", Map.of(
                     "title", Map.of("type", "text"),
                     "content", Map.of("type", "text"),
                     "kbCode", Map.of("type", "keyword"),
@@ -372,8 +398,32 @@ public class HybridRagService {
                         || !e.getResponseBodyAsString().contains("resource_already_exists_exception")) throw e;
             }
         }
-        return currentProfile;
+        IndexIdentity confirmed = prepared.recreate() ? probeIndex() : physical;
+        if (confirmed == null || !confirmed.owned()) throw new IllegalStateException("knowledge index mapping is not owned");
+        tx.executeWithoutResult(status -> {
+            var state = lockState();
+            if (!prepared.profile().equals(profile(((Number) state.get("generation")).longValue()))) {
+                throw new IllegalStateException("knowledge index generation changed during preparation");
+            }
+            jdbc.update("UPDATE knowledge_index_state SET index_uuid=? WHERE index_name=?", confirmed.uuid(), index);
+        });
+        return new IndexSnapshot(prepared.profile(), confirmed.uuid());
     }
+
+    private void invalidateIdentity(IndexSnapshot expected) {
+        tx.executeWithoutResult(status -> {
+            var state = lockState();
+            if (expected.profile().equals(profile(((Number) state.get("generation")).longValue()))
+                    && expected.uuid().equals(state.get("index_uuid"))) {
+                resetGeneration();
+                jdbc.update("UPDATE knowledge_index_state SET index_uuid=NULL WHERE index_name=?", index);
+            }
+        });
+    }
+
+    private record IndexIdentity(String uuid, boolean owned) {}
+    private record IndexPreparation(String profile, boolean recreate) {}
+    private record IndexSnapshot(String profile, String uuid) {}
 
     private long pendingCount(String profile) {
         return jdbc.queryForObject("""

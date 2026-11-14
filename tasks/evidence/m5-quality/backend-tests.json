@@ -1,0 +1,282 @@
+{
+  "modules": [
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 2,
+        "errors": 0
+      },
+      "module": "geek-aftersale-service"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-aftersale-service"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 45,
+        "errors": 0
+      },
+      "module": "geek-ai"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 15,
+        "errors": 0
+      },
+      "module": "geek-ai"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1,
+        "errors": 0
+      },
+      "module": "geek-auth-system"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-auth-system"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 2,
+        "errors": 0
+      },
+      "module": "geek-common"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-common"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1,
+        "errors": 0
+      },
+      "module": "geek-gateway"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-gateway"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 7,
+        "errors": 0
+      },
+      "module": "geek-inventory-fulfillment"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-inventory-fulfillment"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 2,
+        "errors": 0
+      },
+      "module": "geek-marketing"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 11,
+        "errors": 0
+      },
+      "module": "geek-marketing"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 2,
+        "errors": 0
+      },
+      "module": "geek-member"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-member"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 10,
+        "errors": 0
+      },
+      "module": "geek-merchant-product"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-merchant-product"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1,
+        "errors": 0
+      },
+      "module": "geek-search-recommend"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-search-recommend"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1,
+        "errors": 0
+      },
+      "module": "geek-service-center"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-service-center"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1,
+        "errors": 0
+      },
+      "module": "geek-settlement"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 0,
+        "errors": 0
+      },
+      "module": "geek-settlement"
+    },
+    {
+      "type": "surefire",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 16,
+        "errors": 0
+      },
+      "module": "geek-trade"
+    },
+    {
+      "type": "failsafe",
+      "counts": {
+        "skipped": 0,
+        "failures": 0,
+        "tests": 20,
+        "errors": 0
+      },
+      "module": "geek-trade"
+    }
+  ],
+  "java": "25 (release 21)",
+  "initialCleanAttempt": "Failed on prior non-idempotent approval test assertion; updated assertion to same-token replay and reran full reactor successfully",
+  "command": "mvn -B -ntp -T 1 -Pintegration verify",
+  "totals": {
+    "failsafe": {
+      "skipped": 0,
+      "failures": 0,
+      "tests": 46,
+      "errors": 0
+    },
+    "surefire": {
+      "skipped": 0,
+      "failures": 0,
+      "tests": 91,
+      "errors": 0
+    }
+  },
+  "date": "2026-11-14"
+}

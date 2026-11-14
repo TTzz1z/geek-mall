@@ -17,8 +17,8 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| AgentExecutionIT，真实 MySQL 8.4 + HTTP | 9/9 通过；含原有回归、稳定键重放/冲突、会话所有权/取消、持久步骤与审批恢复 |
-| CartIdempotencyIT，真实 MySQL 8.4 + 脚本 HTTP | 1/1 通过；提交后断开响应、并发重发、服务对象替换、参数冲突、不同用户同键 |
+| AgentExecutionIT，真实 MySQL 8.4 + HTTP | 最终整合 11/11 通过；含原有回归、稳定键重放/冲突、跨用户隔离、会话所有权/取消、队列饱和、持久步骤与审批恢复 |
+| CartIdempotencyIT，真实 MySQL 8.4 + 脚本 HTTP | 最终整合 1/1 通过；提交后断开响应、并发重发、服务对象替换、参数冲突、不同用户同键；远程读取断言位于事务外，提交后响应生成失败也可恢复且不重复加购 |
 | ModelGatewayTest + ModelBodyDeadlineTest | 3/3 通过；真实 HTTP 首字节阻塞、正文空闲、持续心跳触发总体预算 |
 | AiShoppingView.test.ts | 2/2 通过；EOF 部分输出、稳定键重试、显式完成 |
 | mall-web vue-tsc | 通过 |
@@ -26,9 +26,9 @@
 
 原始执行记录（临时，待主代理归档/清理）：`D:/Temp/maven/shoping-agent-batch/verify-focused.log`（Cart1通过、Agent首次9中1仅数字类型断言失败）、`verify-focused2.log`（Agent9/9及模型3通过）、`frontend-final.log`、`typecheck.log`、`browser-verification.json`、`browser-complete.txt`。
 
-## 最终全量待覆盖
+## 最终整合
 
-在最后一次聚焦编译之后补充了队列饱和/取消排队释放槽位、跨用户 requestId 隔离两项 IT（AgentExecutionIT 总数变为 11），以及 GET requestId、超时分类指标、非流式响应头预算、取消 API 返回真实终态等小修正。最终全量需编译并执行这些增量；不得将上方 9/9 当作 11/11。
+2026-11-14 最终完整 reactor `-Pintegration verify` 通过：91 Surefire + 46 Failsafe，零失败/错误/跳过，包括最后新增的两项 Agent IT、超时分类和取消终态修正。加购改为远程准备、事务内标记与写入、事务外生成持久响应；补测响应生成服务故障后重试仍只增加一次。第一次 clean 后整合发现旧审批单测仍期待重复 request 报错，按新契约改为相同 token 重放后重新执行全量通过。精确统计见相邻 m5-quality/backend-tests.json。
 
 ## 边界
 

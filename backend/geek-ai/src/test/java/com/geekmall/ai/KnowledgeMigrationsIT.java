@@ -74,6 +74,10 @@ class KnowledgeMigrationsIT {
                 .isEmpty();
         assertThat(jdbc.queryForObject("SELECT activation_status FROM knowledge_document WHERE id=96202", String.class))
                 .isEqualTo("INACTIVE");
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema=DATABASE() AND table_name='knowledge_index_state' AND column_name='index_uuid'
+                """, Integer.class)).isEqualTo(1);
     }
 
     private record Document(long id, String sourceId, String fileUrl, String status, int version) {}

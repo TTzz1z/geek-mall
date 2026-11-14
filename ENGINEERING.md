@@ -123,11 +123,11 @@ docker compose up -d --build
 
 配置 `EMBEDDING_URL` 为 OpenAI 兼容接口根路径，例如 `http://embedding:8000/v1`。端点须返回 1024 维向量。未配置时使用 Elasticsearch BM25。对比模型时，分别使用 `Qwen/Qwen3-Embedding-0.6B` 和 `BAAI/bge-m3`，为每个模型设置不同的 `KNOWLEDGE_INDEX`，等待索引任务完成后，以管理员令牌调用 `POST /api/v1/admin/ai/knowledge/evaluate?k=5`。响应包含 Recall@K、MRR 和 nDCG。
 
-本地使用 Elasticsearch 8.17.3 和 Ollama 的 Q8_0 模型，对仓库内的六条标注查询评测。BM25 的 Recall@5、MRR、nDCG@5 均为 1.000。两种混合检索的 Recall@5 和 MRR 均为 1.000，nDCG@5 均为 0.972。这组查询主要用于回归验证。
+本轮使用 Elasticsearch 8.17.3 和真实 Ollama 模型，对 62 条合成标注问题执行 DEV/TEST 划分评测：Qwen3 为 Q8_0，BGE-M3 为 F16。基线相关问题的源级 Recall/MRR/nDCG 均为 1，但无答案候选误召回为 83.3%。仅用 DEV 校准 BGE-M3 0.62 准入阈值后，冻结 TEST 的三项检索指标为 0.889、无答案误召回为 33.3%，仍未通过暂定 20% 门槛。数据仅覆盖 3 来源、6 分块且尚无独立人工专家复核，不代表泛化表现。报告、部署配置和失败结果见 [检索评测说明](backend/geek-ai/src/main/resources/eval/retrieval-v2.md)。
 
 独立红队用例位于 `e2e/ai-redteam`。设置隔离环境的 `AI_REDTEAM_URL` 和普通用户的 `AI_REDTEAM_TOKEN`，运行 `npx --yes promptfoo@0.125.1 eval --config e2e/ai-redteam/promptfooconfig.yaml --no-cache`。
 
-Trivy 在安装当前版本之前扫描基准，并在每次安装前清除 CI runner 的项目 SNAPSHOT 缓存，使用同一份漏洞库扫描当前版本和基准提交。PR 以目标分支提交为基准，推送以前一个提交为基准。新出现的 HIGH、CRITICAL 以及从 HIGH 升为 CRITICAL 的结果会阻断 CI。
+Trivy 在安装当前版本之前扫描基准，并在每次安装前清除 CI runner 的项目 SNAPSHOT 缓存，使用同一份漏洞库扫描当前版本和基准提交。PR 以目标分支提交为基准，推送以前一个提交为基准，首次推送或手动触发使用与默认分支的 merge-base。源码依赖和实际 AI 运行镜像均阻断新增 HIGH、CRITICAL 及 HIGH 升为 CRITICAL 的发现；重复发现按最高严重级别归并。既有漏洞仍保留在报告中，门禁成功不代表零漏洞。
 
 ## 可观测性与运维
 

@@ -1,0 +1,14 @@
+[
+  {
+    "case": "payment_recovery",
+    "passed": true
+  },
+  {
+    "case": "refund_recovery",
+    "passed": true
+  },
+  {
+    "case": "broker_recovery",
+    "passed": true
+  }
+]

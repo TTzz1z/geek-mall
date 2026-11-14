@@ -33,6 +33,22 @@ $env:E2E_BASE_URL='http://127.0.0.1:8088'
 
 ## 五项任务验收追踪
 
+本次补齐工作的当前状态以 [执行清单](../tasks/todo.md) 和 [版本化证据](../tasks/evidence/m5-quality/verification.md) 为准。代码已提交到 [草稿 PR #1](https://github.com/TTzz1z/geek-mall/pull/1)，没有合并或部署。不能将全部任务描述为总验收通过：冻结 RAG TEST 的无答案候选误召回率为 33.3%，仍高于暂定 20% 门槛。
+
+| 任务 | 本次新增且已实际执行的验证 | 当前边界 |
+|---|---|---|
+| 1 交易一致性 | 普通取消关闭库存/券/积分、租约失效、逐笔迟到支付返还；七个真实应用验证支付提交后终止 Trade、结算中断时退款不成功、Broker 暂停后的 Outbox 恢复 | 支付为模拟通道；旧工作器必须协调停机迁移，见 [迁移说明](recovery-rollout.md) |
+| 2 Agent 治理 | Turn/加购步骤持久幂等，真实 MySQL+HTTP 的 AgentExecutionIT 11 项；真实远程模型四类合成攻击共 8 次调用、2,370 输出 Token，无越权执行 | 固定攻击样例；跨实例全局 ID/取消和完整模型安全评估仍属扩展 |
+| 3 知识库 | MySQL/ES 索引生命周期、MinIO/Tika 真 PDF 与伪装文件拒绝；62 条合成问题、BM25/Qwen3 Q8_0/BGE-M3 F16 真模型对比和冻结阈值报告 | 仅 3 个来源、6 分块，标注尚无独立人工专家复核；FPR 4/12 未通过暂定门槛，不能宣称泛化质量达标 |
+| 4 流式与观测 | 真实 HTTP 首字节/idle/total 超时、取消、饱和、明确终态；真实 Chrome 检查 EOF 未完成与稳定键重试；前端最新 20 测试和构建通过 | Gateway/Jaeger 的完整部署实验沿用历史证据，本轮未重新部署该链路 |
+| 5 质量门禁 | 完整后端 reactor、迁移/契约、实际七服务演练、真实模型独立验收、远程 CI 和运行镜像漏洞扫描；报告保存 tasks/evidence 与 GitHub artifacts | CI 首轮发现旧 MinIO 镜像不可拉取；已修复真实仓库引用。Guava 安全修复与最终索引身份保护正在复验，远程最终状态须看 PR 检查 |
+
+后端计数以 [backend-tests.json](../tasks/evidence/m5-quality/backend-tests.json) 的实际运行版本为准，新增增量会另记最终结果。真实服务断言见 [M2 记录](../tasks/evidence/m2-recovery/verification.md)，模型调用和前端证据见 [M3 记录](../tasks/evidence/m3-agent/verification.md)。检索实现与质量结果见 [检索评测说明](../backend/geek-ai/src/main/resources/eval/retrieval-v2.md)。
+
+### 上一轮历史基线（b6351e4）
+
+以下记录属于本次补齐前的历史基线，不代表当前目标提交的测试数量或远程 CI 状态。
+
 2026-11-14 本地全量回归覆盖后端 14 个模块，76 项 Surefire 测试与 32 项 Failsafe 集成测试全部通过，失败、错误和跳过均为 0。前端工作区类型检查、测试及生产构建通过，其中商城 10 项测试通过。11 种事件样例与必填字段反例、Trivy 差异门禁脚本及三套 Compose 配置检查通过。
 
 首轮补齐秒杀订单持久化恢复、审批所属会话校验和安全流式输出。模型自然文本按完整短句校验后发送，上游异常或输出校验失败时通过 `message.reset` 替换为安全草稿。公开工具名称仍可进入正常 LLM 规划路径。Prompt 原文匹配针对已测试的回显形式，语义改写的完整检测能力尚未建立。

@@ -2,6 +2,8 @@
 
 本轮在隔离环境验证迁移和故障恢复，没有对用户业务库执行迁移或部署。支付仍使用模拟通道。部署多实例、接入真实支付渠道、私有知识库 ACL 不在本轮范围。
 
+MinIO Docker Hub 镜像在干净 GitHub runner 上已无法拉取。本机此前缓存的实际分发为 coollabsio 的 GHCR 镜像，已检查远程 manifest 并固定同一摘要 `sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68`，Compose 与解析集成测试均直接引用真实仓库，没有新增本地 retag 映射。它是原 RELEASE.2025-04-22T22-12-26Z 的分发，不是平台升级或安全清零；[MinIO 上游仓库](https://github.com/minio/minio) 已归档且改为源码分发，长期平台替换/升级仍需独立处理。
+
 ## 迁移顺序
 
 先停止旧 Trade 和 AI 实例及其工作器，再迁移并启动新版本；这不是支持新旧二进制混跑的滚动升级。支付入口停机期间由支付渠道保留并重试通知，恢复后核对支付单和渠道流水。
@@ -34,3 +36,9 @@ Prometheus 恢复告警已添加规则用例。缺少 Broker/数据库观测时�
 真实 embedding 服务需独立部署。Ollama 示例为 `EMBEDDING_URL=http://<host>:11434/v1`、`EMBEDDING_MODEL=bge-m3:latest`、`KNOWLEDGE_REQUIRE_SEMANTIC_GATE=true`。HF 兼容服务须使用其实际模型名称。0.62 是当前 BGE-M3 DEV 校准值，更换模型或语料后需重新校准；TEST 无答案误召回 33.3% 尚未达到暂定 20% 门槛。未配置 embedding 的 BM25 兼容模式也未通过该质量门槛。
 
 `LLM_HEADER_TIMEOUT_MS`、`LLM_FIRST_BYTE_TIMEOUT_MS`、`LLM_BODY_IDLE_TIMEOUT_MS`、`LLM_TOTAL_TIMEOUT_MS` 与 `LLM_MAX_OUTPUT_TOKENS` 均传入 Compose 的 AI 服务。日志与 Trace 不保存 Prompt 或用户 JWT。
+
+## 安全门禁范围
+
+源码依赖和实际 AI 运行镜像都比较基线与当前提交，新增 HIGH/CRITICAL 以及 HIGH 升为 CRITICAL 会使 CI 失败。运行镜像基线使用对应旧提交的 Jar 和 Dockerfile，以同一扫描标签和同一漏洞数据库比较 OS 与嵌套 Jar；报告包含实际镜像 ID 和提交标签。现有漏洞仍需平台治理，门禁成功不代表零漏洞。
+
+首次 AI 镜像扫描发现 10 条 CRITICAL、33 条 HIGH，其中 Guava CVE-2026-102554 未被源码扫描列出。本轮将该依赖统一固定到 [Guava 33.7.2-jre](https://github.com/google/guava/releases/tag/v33.7.2)，重新执行完整验证与镜像扫描。未将运行镜像扫描保持为非阻断的报告步骤。

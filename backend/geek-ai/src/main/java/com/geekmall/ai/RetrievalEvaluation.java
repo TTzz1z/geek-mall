@@ -96,7 +96,7 @@ class RetrievalEvaluation {
                 "p95LatencyMsMax", 2000, "noAnswerFalsePositiveRateMax", 0.20, "scopeViolationsMax", 0, "versionViolationsMax", 0));
         report.put("passesProvisionalThresholds", recall >= 0.80 && mrr >= 0.70 && ndcg >= 0.75 && p95 <= 2000
                 && falsePositiveRate <= 0.20 && scopeViolations == 0 && versionViolations == 0);
-        report.put("limitations", "人工编写的种子语料问题；仅覆盖3个来源、6个分块；DEV/TEST按问题固定划分，非独立文档泛化验证。无答案检索结果仅表示候选误召回，不表示模型已编造答案。");
+        report.put("limitations", "基于种子语料合成并标注的问题，尚无独立人工复核；仅覆盖3个来源、6个分块；DEV/TEST按问题固定划分，非独立文档泛化验证。无答案检索结果仅表示候选误召回，不表示模型已编造答案。");
         report.put("details", details);
         return report;
     }

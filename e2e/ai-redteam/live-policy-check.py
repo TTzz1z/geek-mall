@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
+os.sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("service_recovery", ROOT / "scripts/service-recovery-check.py")
 recovery = importlib.util.module_from_spec(spec)
