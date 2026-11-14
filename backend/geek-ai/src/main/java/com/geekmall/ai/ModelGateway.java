@@ -40,6 +40,12 @@ public class ModelGateway {
     private final String llmApiKey;
     private final String llmModel;
     private final int llmTimeoutMs;
+    @Value("${geek.llm.header-timeout-ms:15000}") private int headerTimeoutMs=15000;
+    @Value("${geek.llm.first-byte-timeout-ms:15000}") private int firstByteTimeoutMs=15000;
+    @Value("${geek.llm.body-idle-timeout-ms:15000}") private int bodyIdleTimeoutMs=15000;
+    @Value("${geek.llm.total-timeout-ms:60000}") private int totalTimeoutMs=60000;
+    @Value("${geek.llm.max-output-tokens:2048}") private int maxOutputTokens=2048;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private AiTurnTelemetry telemetry;
 
     public ModelGateway(JdbcTemplate jdbc,
                         ObjectMapper mapper,
@@ -90,24 +96,27 @@ public class ModelGateway {
                                   AnswerStreamGuard output, TurnCancellation cancellation) {
         if (!remoteConfigured() || failPrimary) return completeAnswer(systemPrompt, userPrompt, conversationId);
         long started = System.currentTimeMillis();
+        long startedNanos=System.nanoTime();
         String requestId = UUID.randomUUID().toString();
         try {
             var messages = List.of(Map.of("role", "system", "content", systemPrompt),
                     Map.of("role", "user", "content", userPrompt));
-            var body = Map.of("model", llmModel, "messages", messages, "temperature", 0.3,
+            var body = Map.of("model", llmModel, "messages", messages, "temperature", 0.3,"max_tokens", Math.max(64,Math.min(8192,maxOutputTokens)),
                     "stream", true, "stream_options", Map.of("include_usage", true));
             var request = HttpRequest.newBuilder(chatEndpoint())
-                    .timeout(Duration.ofMillis(llmTimeoutMs)).header("Authorization", "Bearer " + llmApiKey)
+                    .timeout(Duration.ofMillis(Math.max(1,Math.min(headerTimeoutMs,totalTimeoutMs)))).header("Authorization", "Bearer " + llmApiKey)
                     .header("Content-Type", "application/json").header("Accept", "text/event-stream")
                     .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build();
             var response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
             var responseBody = response.body();
-            try (var input = responseBody; var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-                cancellation.attach(input);
+            try (var input = new DeadlineInputStream(responseBody,startedNanos,firstByteTimeoutMs,bodyIdleTimeoutMs,totalTimeoutMs);
+                 var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+                cancellation.attach(responseBody);
                 if (response.statusCode() != 200) throw new IllegalStateException("upstream rejected stream");
                 var answer = new StringBuilder();
                 JsonNode providerUsage = null;
                 boolean finished = false;
+                boolean firstDelta=true;
                 for (String line; (line = readEventLine(reader)) != null;) {
                     cancellation.check();
                     if (!line.startsWith("data:")) continue;
@@ -120,6 +129,7 @@ public class ModelGateway {
                     if (event.hasNonNull("usage")) providerUsage = event.path("usage");
                     String delta = event.path("choices").path(0).path("delta").path("content").asText("");
                     if (!delta.isEmpty()) {
+                        if(firstDelta) { firstDelta=false; if(telemetry!=null) telemetry.duration("first.delta",System.nanoTime()-startedNanos); }
                         if (answer.length() + delta.length() > 32_000) throw new IllegalStateException("upstream answer too long");
                         answer.append(delta);
                         output.accept(delta);
@@ -144,6 +154,7 @@ public class ModelGateway {
         } catch (Exception e) {
             cancellation.check();
             if (e instanceof CancellationException cancelled) throw cancelled;
+            recordTimeout(e);
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - started),
                     estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED", "scene=ANSWER;stream");
             return new CompletionResult(fallback, localComplete(), estimateTokens(systemPrompt + userPrompt), 0, true, true);
@@ -183,6 +194,7 @@ public class ModelGateway {
                     remoteConfigured() ? ("scene=" + scene) : "local");
             return new CompletionResult(model, text, usage.promptTokens(), usage.completionTokens(), usage.estimated(), !remoteConfigured());
         } catch (Exception primaryError) {
+            recordTimeout(primaryError);
             model = fallback;
             String text = localComplete();
             int promptTokens = estimateTokens(systemPrompt + userPrompt);
@@ -217,6 +229,7 @@ public class ModelGateway {
                     usage.promptTokens(), usage.completionTokens(), usage.estimated(), "SUCCESS", "scene=" + scene);
             return new CompletionResult(primary, remote.text(), usage.promptTokens(), usage.completionTokens(), usage.estimated(), false);
         } catch (Exception ex) {
+            recordTimeout(ex);
             log(requestId, conversationId, primary, (int) (System.currentTimeMillis() - start),
                     estimateTokens(systemPrompt + userPrompt), 0, true, "FAILED",
                     "scene=" + scene + ";" + ex.getClass().getSimpleName());
@@ -235,6 +248,7 @@ public class ModelGateway {
         body.put("model", llmModel);
         body.put("messages", messages);
         body.put("temperature", temperature);
+        body.put("max_tokens",Math.max(64,Math.min(8192,maxOutputTokens)));
         if (jsonObject) {
             body.put("response_format", Map.of("type", "json_object"));
         }
@@ -242,12 +256,20 @@ public class ModelGateway {
         byte[] payload = mapper.writeValueAsBytes(body);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(chatEndpoint())
-                .timeout(Duration.ofMillis(Math.max(3000, timeoutMs)))
+                .timeout(Duration.ofMillis(Math.max(1,Math.min(timeoutMs,Math.min(headerTimeoutMs,totalTimeoutMs)))))
                 .header("Authorization", "Bearer " + llmApiKey)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofByteArray(payload))
                 .build();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        long startedNanos=System.nanoTime();
+        var response = http.send(request,HttpResponse.BodyHandlers.ofInputStream());
+        String responseText;
+        try (var input=new DeadlineInputStream(response.body(),startedNanos,firstByteTimeoutMs,bodyIdleTimeoutMs,
+                Math.min(timeoutMs,totalTimeoutMs))) {
+            byte[] bytes=input.readNBytes(512_001);
+            if(bytes.length>512_000) throw new java.io.IOException("upstream response too long");
+            responseText=new String(bytes,StandardCharsets.UTF_8);
+        }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             // Some providers reject response_format — retry once without it for planner.
             if (jsonObject && response.statusCode() == 400) {
@@ -255,7 +277,7 @@ public class ModelGateway {
             }
             throw new IllegalStateException("LLM HTTP " + response.statusCode());
         }
-        JsonNode root = mapper.readTree(response.body());
+        JsonNode root = mapper.readTree(responseText);
         JsonNode content = root.path("choices").path(0).path("message").path("content");
         if (content.isMissingNode() || content.asText().isBlank()) {
             throw new IllegalStateException("LLM empty content");
@@ -268,6 +290,12 @@ public class ModelGateway {
 
     private String localComplete() {
         return "模型暂时不可用，请稍后重试。";
+    }
+
+    private void recordTimeout(Exception error) {
+        if (telemetry == null) return;
+        if (error instanceof DeadlineInputStream.BodyTimeoutException timeout) telemetry.timeout(timeout.phase);
+        else if (error instanceof java.net.http.HttpTimeoutException) telemetry.timeout("headers");
     }
 
     private URI chatEndpoint() {

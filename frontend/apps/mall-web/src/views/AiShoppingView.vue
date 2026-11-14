@@ -14,6 +14,10 @@ type ChatItem = {
   confirmations?: Array<Record<string, unknown>>
   products?: ProductCard[]
   degraded?: boolean
+  state?: 'streaming' | 'completed' | 'incomplete' | 'cancelled'
+  requestId?: string
+  requestText?: string
+  turnId?: string
 }
 
 type ProductCard = {
@@ -164,25 +168,42 @@ function cancelStream() {
 
 onUnmounted(cancelStream)
 
-async function send() {
-  const text = input.value.trim()
+async function abandon(assistant: ChatItem) {
+  if (!assistant.turnId) return
+  try {
+    const result = await mallApi.request<{ status: string; content?: string }>(
+      `/api/v1/ai/conversations/${conversationNo.value}/turns/${assistant.turnId}`, { method: 'DELETE' })
+    assistant.state = result.status === 'COMPLETED' ? 'completed' : 'cancelled'
+    if (result.content) assistant.content = result.content
+  } catch (error) {
+    items.value.push({ role: 'system', content: error instanceof Error ? error.message : '暂时无法放弃请求，请重试' })
+  }
+}
+
+async function send(retry?: ChatItem) {
+  const text = retry?.requestText ?? input.value.trim()
   if (!text || loading.value) return
   loading.value = true
   const stream = new AbortController()
   activeStream = stream
-  items.value.push({ role: 'user', content: text })
+  if (!retry) items.value.push({ role: 'user', content: text })
   input.value = ''
   streamLog.value = []
 
-  const assistant: ChatItem = {
+  const assistant: ChatItem = retry ?? {
     role: 'assistant',
     content: '',
     tools: [],
     citations: [],
     confirmations: [],
-    products: []
+    products: [],
+    requestId: crypto.randomUUID(),
+    requestText: text
   }
-  items.value.push(assistant)
+  assistant.state = 'streaming'
+  assistant.content = ''
+  if (!retry) items.value.push(assistant)
+  let completed = false
 
   try {
     await ensureConversation()
@@ -192,11 +213,11 @@ async function send() {
       {
         method: 'POST',
         signal: stream.signal,
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, requestId: assistant.requestId }),
         headers: {
           Accept: 'text/event-stream',
           'Content-Type': 'application/json',
-          'X-Request-Id': crypto.randomUUID(),
+          'X-Request-Id': assistant.requestId!,
           'X-Client-Type': 'WEB',
           ...(token ? { Authorization: `Bearer ${token}` } : {})
         }
@@ -220,6 +241,13 @@ async function send() {
         const data = (e.data && typeof e.data === 'object' ? e.data : {}) as Record<string, unknown>
         if (e.event === 'turn.accepted') {
           activeTurnId = String(data.turnId ?? '')
+          assistant.turnId = activeTurnId
+        } else if (e.event === 'turn.cancelled') {
+          assistant.state = 'cancelled'
+          throw new Error(String(data.message ?? '生成已取消'))
+        } else if (e.event === 'turn.running') {
+          assistant.turnId = String(data.turnId ?? '')
+          throw new Error('原请求仍在执行，请稍后重试获取结果')
         } else if (e.event === 'message.start') {
           assistant.agent = String(data.agent ?? '')
         } else if (e.event === 'message.delta') {
@@ -236,6 +264,8 @@ async function send() {
         } else if (e.event === 'confirmation.required') {
           assistant.confirmations = [...(assistant.confirmations ?? []), data]
         } else if (e.event === 'message.complete') {
+          completed = true
+          assistant.state = 'completed'
           if (data.content) assistant.content = String(data.content)
           if (data.agent) assistant.agent = String(data.agent)
           if (Array.isArray(data.tools)) assistant.tools = data.tools as Array<Record<string, unknown>>
@@ -252,22 +282,14 @@ async function send() {
       await nextTick()
       listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: 'smooth' })
     }
+    if (!completed) throw new Error('连接已结束，回答未完成，请重试')
     if (!assistant.content) assistant.content = '（无内容）'
     refreshProducts(assistant)
   } catch (e) {
-    if (stream.signal.aborted) {
-      if (!assistant.content) assistant.content = '已取消生成'
-      return
-    }
-    // Keep already-streamed answer/products if a late disconnect fires after message.complete.
-    const msg = e instanceof Error ? e.message : 'AI 请求失败，请先登录后再试'
-    if (!assistant.content || assistant.content === '（无内容）') {
-      assistant.content = msg
-    } else if (/network error|Failed to fetch|SSE/i.test(msg)) {
-      /* ignore late transport noise */
-    } else {
-      assistant.content = `${assistant.content}\n\n（${msg}）`
-    }
+    if (completed) return
+    assistant.state = stream.signal.aborted || assistant.state === 'cancelled' ? 'cancelled' : 'incomplete'
+    if (!assistant.content) assistant.content = stream.signal.aborted ? '已取消生成' :
+      e instanceof Error ? e.message : 'AI 请求失败，请稍后重试'
   } finally {
     activeStream = undefined
     activeTurnId = ''
@@ -329,6 +351,11 @@ onMounted(async () => {
           <strong v-else-if="m.role === 'user'">我</strong>
           <strong v-else>系统</strong>
           <p>{{ m.content }}</p>
+          <div v-if="m.state === 'incomplete' || m.state === 'cancelled'" role="status">
+            {{ m.state === 'cancelled' ? '已取消，回答未完成' : '回答未完成' }}
+            <button v-if="m.state === 'incomplete'" type="button" :disabled="loading" @click="send(m)">重试</button>
+            <button v-if="m.state === 'incomplete' && m.turnId" type="button" :disabled="loading" @click="abandon(m)">放弃此请求</button>
+          </div>
           <div v-if="m.degraded" class="badge warn"><Warning :size="14" /> 模型已降级</div>
 
           <div v-if="m.products?.length" class="ai-product-rail" aria-label="推荐商品">
@@ -389,7 +416,7 @@ onMounted(async () => {
       </aside>
     </div>
 
-    <form class="composer" @submit.prevent="send">
+    <form class="composer" @submit.prevent="send()">
       <textarea v-model="input" rows="2" placeholder="例如：8000 元内轻薄办公本 / NovaBuds 和 Buds Lite 怎么选" />
       <button v-if="loading" type="button" @click="cancelStream">停止生成</button>
       <button v-else type="submit"><Send :size="18" /> 发送</button>

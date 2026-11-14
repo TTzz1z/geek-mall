@@ -70,7 +70,7 @@ class AiController {
                                              @AuthenticationPrincipal AuthPrincipal p,
                                              HttpServletRequest r) {
         String auth = r.getHeader("Authorization");
-        return ok(orchestrator.postMessage(conversationNo, body.message(), body.scene(), p, auth), r);
+        return ok(orchestrator.postMessage(conversationNo, body.message(), body.scene(), p, auth, body.requestId()), r);
     }
 
     @GetMapping(value = "/ai/conversations/{conversationNo}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -78,10 +78,11 @@ class AiController {
     SseEmitter stream(@PathVariable String conversationNo,
                       @RequestParam @NotBlank String message,
                       @RequestParam(required = false) String scene,
+                      @RequestParam(required = false) String requestId,
                       @AuthenticationPrincipal AuthPrincipal p,
                       HttpServletRequest r, HttpServletResponse response) {
         streamHeaders(response);
-        return orchestrator.streamMessage(conversationNo, message, scene, p, r.getHeader("Authorization"));
+        return orchestrator.streamMessage(conversationNo, message, scene, p, r.getHeader("Authorization"), requestId);
     }
 
     @PostMapping(value = "/ai/conversations/{conversationNo}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -89,7 +90,7 @@ class AiController {
     SseEmitter streamPost(@PathVariable String conversationNo, @Valid @RequestBody MessageBody body,
                           @AuthenticationPrincipal AuthPrincipal p, HttpServletRequest r, HttpServletResponse response) {
         streamHeaders(response);
-        return orchestrator.streamMessage(conversationNo, body.message(), body.scene(), p, r.getHeader("Authorization"));
+        return orchestrator.streamMessage(conversationNo, body.message(), body.scene(), p, r.getHeader("Authorization"), body.requestId());
     }
 
     private static void streamHeaders(HttpServletResponse response) {
@@ -99,10 +100,9 @@ class AiController {
 
     @DeleteMapping("/ai/conversations/{conversationNo}/turns/{turnId}")
     @PreAuthorize("isAuthenticated()")
-    ApiResponse<Map<String, String>> cancelTurn(@PathVariable String conversationNo, @PathVariable String turnId,
+    ApiResponse<Map<String, Object>> cancelTurn(@PathVariable String conversationNo, @PathVariable String turnId,
                                                 @AuthenticationPrincipal AuthPrincipal p, HttpServletRequest r) {
-        orchestrator.cancelTurn(conversationNo, turnId, p.userId());
-        return ok(Map.of("status", "CANCELLED"), r);
+        return ok(orchestrator.cancelTurn(conversationNo, turnId, p.userId()), r);
     }
 
     @PostMapping("/ai/tool-calls/{confirmationToken}/confirm")
@@ -245,7 +245,7 @@ class AiController {
     }
 
     record CreateBody(String scene, Map<String, Object> context) {}
-    record MessageBody(@NotBlank @Size(max = 2000) String message, String scene) {}
+    record MessageBody(@NotBlank @Size(max = 2000) String message, String scene, @Size(max=100) String requestId) {}
     record IngestBody(@Size(max = 64) String kbCode, @Size(max = 64) String sourceType,
                       @Size(max = 64) String sourceId, @NotBlank @Size(max = 255) String title,
                       @Size(max = 160) String mimeType, @Size(max = 500) String fileUrl,

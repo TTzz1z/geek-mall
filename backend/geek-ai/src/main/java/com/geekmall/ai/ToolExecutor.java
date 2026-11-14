@@ -45,6 +45,11 @@ public class ToolExecutor {
 
     public Map<String, Object> execute(String toolName, Map<String, Object> args, long userId, String userToken,
                                        String knowledgeScope) {
+        return execute(toolName,args,userId,userToken,knowledgeScope,null);
+    }
+
+    public Map<String,Object> execute(String toolName,Map<String,Object> args,long userId,String userToken,
+                                      String knowledgeScope,String stepKey) {
         ToolPolicy.authorize(toolName, args, userId, false);
         Map<String, Object> a = args == null ? Map.of() : args;
         return switch (toolName) {
@@ -75,13 +80,13 @@ public class ToolExecutor {
             case "add_cart_item" -> {
                 long skuId = longVal(a.get("skuId"), 0L);
                 if (skuId <= 0) throw new BusinessException("AI40003", "缺少有效 skuId");
-                yield requireUser(userId, addCartItem(userToken, skuId, intVal(a.get("quantity"), 1)));
+                yield requireUser(userId, addCartItem(userToken, skuId, intVal(a.get("quantity"), 1),stepKey));
             }
-            case "create_aftersale_draft" -> requireUser(userId, createAftersaleDraft(userId, a));
+            case "create_aftersale_draft" -> requireUser(userId, createAftersaleDraft(userId, a, stepKey));
             case "generate_product_draft" -> Map.of("status", "DRAFT", "title", "AI 生成商品草稿", "confidence", 0.72,
                     "message", "草稿需人工确认后才能提交审核");
             case "create_ticket_draft" -> requireUser(userId, saveDraft(userId, "TICKET", a,
-                    Map.of("status", "DRAFT", "title", a.getOrDefault("title", "客服工单草稿"))));
+                    Map.of("status", "DRAFT", "title", a.getOrDefault("title", "客服工单草稿")),stepKey));
             default -> throw new BusinessException("AI40401", "未实现工具: " + toolName);
         };
     }
@@ -346,7 +351,7 @@ public class ToolExecutor {
                 "message", "请提供本人 orderNo 以查询物流");
     }
 
-    private Map<String, Object> addCartItem(String userToken, long skuId, int quantity) {
+    private Map<String, Object> addCartItem(String userToken, long skuId, int quantity,String stepKey) {
         try {
             @SuppressWarnings("unchecked")
             Map<String, Object> node = tradeClient.post()
@@ -354,6 +359,7 @@ public class ToolExecutor {
                     .headers(h -> {
                         applyAuth(h, userToken);
                         h.set("Content-Type", "application/json");
+                        if(stepKey!=null) h.set("Idempotency-Key",stepKey);
                     })
                     .body(Map.of("skuId", skuId, "quantity", Math.max(1, quantity)))
                     .retrieve().body(Map.class);
@@ -373,7 +379,7 @@ public class ToolExecutor {
         }
     }
 
-    private Map<String, Object> createAftersaleDraft(long userId, Map<String, Object> a) {
+    private Map<String, Object> createAftersaleDraft(long userId, Map<String, Object> a,String stepKey) {
         // 正式售后申请走业务页；此处仅落 AI 侧草稿，不调用 aftersale APPLIED。
         Map<String, Object> draft = new LinkedHashMap<>();
         draft.put("type", a.getOrDefault("type", "REFUND_ONLY"));
@@ -388,18 +394,21 @@ public class ToolExecutor {
         } catch (Exception ignored) {
             draft.put("aftersaleService", "UNKNOWN");
         }
-        return saveDraft(userId, "AFTERSALE", a, draft);
+        return saveDraft(userId, "AFTERSALE", a, draft,stepKey);
     }
 
-    private Map<String, Object> saveDraft(long userId, String draftType, Map<String, Object> args, Map<String, Object> payload) {
+    private Map<String, Object> saveDraft(long userId, String draftType, Map<String, Object> args, Map<String, Object> payload,String stepKey) {
         long id = DistributedId.next();
-        String no = "AID" + id;
+        String no = stepKey==null ? "AID"+id : "AID"+stepKey;
         Instant now = Instant.now();
         jdbc.update("""
                 INSERT INTO ai_business_draft(id,draft_no,user_id,draft_type,status,payload_json,created_at,updated_at)
-                VALUES(?,?,?,?, 'DRAFT',?,?,?)
+                VALUES(?,?,?,?, 'DRAFT',?,?,?) ON DUPLICATE KEY UPDATE draft_no=draft_no
                 """, id, no, userId, draftType, json(payload), Timestamp.from(now), Timestamp.from(now));
-        Map<String, Object> out = new LinkedHashMap<>(payload);
+        var stored=jdbc.queryForMap("SELECT id,payload_json FROM ai_business_draft WHERE draft_no=? AND user_id=?",no,userId);
+        id=((Number)stored.get("id")).longValue();
+        Map<String,Object> out;
+        try { out=mapper.readValue(String.valueOf(stored.get("payload_json")),new com.fasterxml.jackson.core.type.TypeReference<LinkedHashMap<String,Object>>(){}); } catch(Exception e) { throw new IllegalStateException(e); }
         out.put("draftNo", no);
         out.put("draftId", id);
         out.put("status", "DRAFT");

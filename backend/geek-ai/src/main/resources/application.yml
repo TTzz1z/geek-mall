@@ -28,8 +28,10 @@ geek:
     minio-access-key: ${MINIO_ACCESS_KEY:geek}
     minio-secret-key: ${MINIO_SECRET_KEY:CHANGE_ME_MINIO_SECRET_KEY}
     embedding-url: ${EMBEDDING_URL:}
-    embedding-model: ${EMBEDDING_MODEL:Qwen/Qwen3-Embedding-0.6B}
+    embedding-model: ${EMBEDDING_MODEL:BAAI/bge-m3}
     embedding-key: ${EMBEDDING_API_KEY:}
+    minimum-similarity: ${KNOWLEDGE_MINIMUM_SIMILARITY:0.62}
+    require-semantic-gate: ${KNOWLEDGE_REQUIRE_SEMANTIC_GATE:false}
     index: ${KNOWLEDGE_INDEX:geek-knowledge-v2}
   llm:
     enabled: ${LLM_ENABLED:true}
@@ -37,6 +39,11 @@ geek:
     api-key: ${LLM_API_KEY:}
     model: ${LLM_MODEL:deepseek-v4-flash}
     timeout-ms: ${LLM_TIMEOUT_MS:60000}
+    header-timeout-ms: ${LLM_HEADER_TIMEOUT_MS:15000}
+    first-byte-timeout-ms: ${LLM_FIRST_BYTE_TIMEOUT_MS:15000}
+    body-idle-timeout-ms: ${LLM_BODY_IDLE_TIMEOUT_MS:15000}
+    total-timeout-ms: ${LLM_TOTAL_TIMEOUT_MS:60000}
+    max-output-tokens: ${LLM_MAX_OUTPUT_TOKENS:2048}
     planner-enabled: ${LLM_PLANNER_ENABLED:true}
     planner-timeout-ms: ${LLM_PLANNER_TIMEOUT_MS:12000}
     planner-max-tool-steps: ${LLM_PLANNER_MAX_TOOL_STEPS:5}

@@ -18,10 +18,23 @@ class AiTurnTelemetry {
     }
 
     <T> T stage(String name, Supplier<T> action) {
-        return Observation.createNotStarted("ai.agent." + name, observations).observe(action);
+        long started = System.nanoTime();
+        try {
+            return Observation.createNotStarted("ai.agent." + name, observations).observe(action);
+        } finally {
+            duration(name, System.nanoTime() - started);
+        }
     }
 
     void count(String name) {
         metrics.counter("ai.agent." + name).increment();
+    }
+    void timeout(String phase) {
+        metrics.counter("ai.agent.timeout","phase",phase).increment();
+    }
+    void duration(String name,long nanos) {
+        io.micrometer.core.instrument.Timer.builder("ai.agent." + name)
+                .publishPercentileHistogram().register(metrics)
+                .record(nanos,java.util.concurrent.TimeUnit.NANOSECONDS);
     }
 }

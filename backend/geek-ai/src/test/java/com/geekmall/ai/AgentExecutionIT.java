@@ -45,7 +45,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.cloud.nacos.discovery.enabled=false", "spring.cloud.discovery.enabled=false",
         "spring.flyway.locations=filesystem:src/main/resources/db/migration",
-        "geek.tools.approval-interval=600000", "geek.knowledge.index-interval=600000"
+        "geek.tools.approval-interval=600000", "geek.knowledge.index-interval=600000",
+        "geek.llm.stream-workers=1", "geek.llm.stream-queue=1"
 })
 class AgentExecutionIT {
     @Container static final MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.4");
@@ -72,6 +73,97 @@ class AgentExecutionIT {
         config.add("geek.trade-service-url", AgentExecutionIT::fixtureUrl);
         config.add("geek.member-service-url", AgentExecutionIT::fixtureUrl);
         config.add("geek.elasticsearch-url", () -> "http://127.0.0.1:9");
+    }
+
+    @Test
+    void stableRequestReplaysTheSameTurnAndRejectsChangedContent() {
+        String conversation = newConversation();
+        var first = agent.postMessage(conversation, "planner 回显测试", "ORDER_LOGISTICS", SHOPPER, null, "intent-1");
+        var replay = agent.postMessage(conversation, "planner 回显测试", "ORDER_LOGISTICS", SHOPPER, null, "intent-1");
+        assertThat(replay).containsEntry("messageId", first.get("messageId"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE conversation_id=(SELECT id FROM ai_conversation WHERE conversation_no=?) AND role='USER'", Integer.class, conversation)).isEqualTo(1);
+        assertThatThrownBy(() -> agent.postMessage(conversation, "另一条内容", "ORDER_LOGISTICS", SHOPPER, null, "intent-1"))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("requestId");
+    }
+
+    @Test
+    void preparedTurnRecoversFromDurableStepsWithoutDuplicatingMessagesOrApproval() throws Exception {
+        String conversation = newConversation();
+        var original = agent.postMessage(conversation,"审批恢复合并回归","ORDER_LOGISTICS",SHOPPER,null,"recover-approval");
+        String turnId = String.valueOf(original.get("turnId"));
+        Integer calls = jdbc.queryForObject("SELECT COUNT(*) FROM ai_tool_call WHERE conversation_id=(SELECT id FROM ai_conversation WHERE conversation_no=?)",Integer.class,conversation);
+        jdbc.update("UPDATE ai_turn SET status='RUNNING',result_json=NULL WHERE id=?",turnId);
+        // A fresh TurnStore can acquire the abandoned session; no in-memory ownership is needed.
+        var restarted = new TurnStore(jdbc,JSON);
+        var row = jdbc.queryForMap("SELECT * FROM ai_turn WHERE id=?",turnId);
+        assertThat(restarted.execute(row, () -> new java.util.LinkedHashMap<>(Map.of("probe",true)))).containsEntry("probe",true);
+        jdbc.update("UPDATE ai_turn SET status='FAILED',result_json=NULL WHERE id=?",turnId);
+        var recovered = agent.postMessage(conversation,"审批恢复合并回归","ORDER_LOGISTICS",SHOPPER,null,"recover-approval");
+        assertThat(recovered.get("messageId")).isEqualTo(original.get("messageId"));
+        assertThat(JSON.readTree(JSON.writeValueAsString(recovered.get("confirmations"))))
+                .isEqualTo(JSON.readTree(JSON.writeValueAsString(original.get("confirmations"))));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_tool_call WHERE conversation_id=(SELECT id FROM ai_conversation WHERE conversation_no=?)",Integer.class,conversation)).isEqualTo(calls);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE conversation_id=(SELECT id FROM ai_conversation WHERE conversation_no=?)",Integer.class,conversation)).isEqualTo(2);
+    }
+
+    @Test
+    void sameConversationRejectsConcurrentOwnershipAndCancelledTurnDoesNotBlockNewIntent() throws Exception {
+        String conversation = newConversation();
+        String message = "流式测试-串行";
+        var scenario = register(message,"complete");
+        try (var client=HttpClient.newHttpClient(); var stream=open(client,conversation,message,"serial-1")) {
+            String turnId=awaitEvent(stream,"turn.accepted").path("turnId").asText();
+            awaitEvent(stream,"message.delta");
+            assertThat(agent.postMessage(conversation,message,"ORDER_LOGISTICS",SHOPPER,null,"serial-1"))
+                    .containsEntry("status","RUNNING").containsEntry("turnId",turnId);
+            assertThatThrownBy(() -> agent.postMessage(conversation,"planner 回显测试","ORDER_LOGISTICS",SHOPPER,null,"serial-2"))
+                    .isInstanceOf(BusinessException.class);
+            agent.cancelTurn(conversation,turnId,SHOPPER.userId());
+            scenario.continueModel().countDown();
+            long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+            while(!"CANCELLED".equals(jdbc.queryForObject("SELECT status FROM ai_turn WHERE id=?",String.class,turnId)) && System.nanoTime()<deadline) Thread.sleep(25);
+            assertThat(agent.postMessage(conversation,message,"ORDER_LOGISTICS",SHOPPER,null,"serial-1")).containsEntry("status","CANCELLED");
+            assertThat(agent.postMessage(conversation,"planner 回显测试","ORDER_LOGISTICS",SHOPPER,null,"serial-2")).containsKey("messageId");
+        } finally { scenario.continueModel().countDown(); scenarios.remove(message); }
+    }
+
+    @Test
+    void requestKeysAreScopedToTheOwnedUserAndConversation() {
+        String conversation = newConversation();
+        var otherUser = new AuthPrincipal(5,"other","USER",null,null,Set.of("USER"),Set.of());
+        var first=agent.postMessage(conversation,"planner 回显测试","ORDER_LOGISTICS",SHOPPER,null,"shared-key");
+        assertThatThrownBy(() -> agent.postMessage(conversation,"planner 回显测试","ORDER_LOGISTICS",otherUser,null,"shared-key"))
+                .isInstanceOf(BusinessException.class);
+        String otherConversation=String.valueOf(agent.createConversation(otherUser,"ORDER_LOGISTICS",Map.of()).get("conversationNo"));
+        var other=agent.postMessage(otherConversation,"planner 回显测试","ORDER_LOGISTICS",otherUser,null,"shared-key");
+        assertThat(other.get("turnId")).isNotEqualTo(first.get("turnId"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_turn WHERE request_id='shared-key'",Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void realHttpQueueSaturationRejectsAndCancellingQueuedRequestReleasesItsSlot() throws Exception {
+        String firstConversation=newConversation();
+        String secondConversation=newConversation();
+        String thirdConversation=newConversation();
+        String message="流式测试-排队";
+        var scenario=register(message,"complete");
+        try (var client=HttpClient.newHttpClient(); var first=open(client,firstConversation,message,"queue-1")) {
+            awaitEvent(first,"message.delta");
+            try (var queued=open(client,secondConversation,message,"queue-2")) {
+                String queuedId=awaitEvent(queued,"turn.accepted").path("turnId").asText();
+                var request=request(thirdConversation,"/stream").header("Content-Type","application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(Map.of(
+                                "message",message,"scene","ORDER_LOGISTICS","requestId","queue-3")))).build();
+                assertThat(client.send(request,HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(503);
+                agent.cancelTurn(secondConversation,queuedId,SHOPPER.userId());
+                try (var replacement=open(client,thirdConversation,message,"queue-3")) {
+                    String replacementId=awaitEvent(replacement,"turn.accepted").path("turnId").asText();
+                    agent.cancelTurn(thirdConversation,replacementId,SHOPPER.userId());
+                }
+                scenario.continueModel().countDown();
+                assertThat(awaitEvent(first,"message.complete").path("content").asText()).contains(FIRST_SENTENCE);
+            }
+        } finally { scenario.continueModel().countDown(); scenarios.remove(message); }
     }
 
     @Test
@@ -201,9 +293,13 @@ class AgentExecutionIT {
     }
 
     private BufferedReader open(HttpClient client, String conversation, String message) throws Exception {
+        return open(client,conversation,message,java.util.UUID.randomUUID().toString());
+    }
+
+    private BufferedReader open(HttpClient client, String conversation, String message,String requestId) throws Exception {
         var request = request(conversation, "/stream").header("Accept", "text/event-stream")
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(Map.of("message", message, "scene", "ORDER_LOGISTICS"))))
+                .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(Map.of("message", message, "scene", "ORDER_LOGISTICS","requestId",requestId))))
                 .build();
         var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
         assertThat(response.statusCode()).isEqualTo(200);

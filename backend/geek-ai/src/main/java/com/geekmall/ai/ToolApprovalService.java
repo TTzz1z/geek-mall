@@ -41,6 +41,8 @@ class ToolApprovalService {
                 throw new BusinessException("AI40303", "工具不属于当前用户会话");
             }
             var tool = rows.getFirst();
+            var existing=jdbc.queryForList("SELECT confirmation_token FROM ai_confirmation WHERE tool_call_id=? AND user_id=?",toolId,userId);
+            if (!existing.isEmpty()) return String.valueOf(existing.getFirst().get("confirmation_token"));
             if (!"PENDING".equals(tool.get("status"))) throw new BusinessException("AI40902", "工具已进入审批流程");
             ToolPolicy.authorize(String.valueOf(tool.get("tool_name")), arguments(tool), userId, true);
             String token = UUID.randomUUID().toString();

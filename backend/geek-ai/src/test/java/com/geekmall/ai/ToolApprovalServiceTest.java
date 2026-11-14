@@ -29,7 +29,7 @@ class ToolApprovalServiceTest {
         }).when(fixture.tools()).validateDraftResources(anyString(), anyMap(), anyLong(), anyString());
         assertThatThrownBy(() -> service.request(1, 5)).isInstanceOf(BusinessException.class);
         String token = service.request(1, 4);
-        assertThatThrownBy(() -> service.request(1, 4)).isInstanceOf(BusinessException.class);
+        assertThat(service.request(1, 4)).isEqualTo(token);
         assertThatThrownBy(() -> service.confirm(token, 5, "Bearer other")).isInstanceOf(BusinessException.class);
         assertThat(service.confirm(token, 4, "Bearer owner")).containsEntry("status", "CONFIRMED");
         assertThat(service.cancel(token, 4)).containsEntry("status", "CONFIRMED");
