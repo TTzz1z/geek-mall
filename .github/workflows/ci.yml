@@ -2,6 +2,7 @@ name: phase-7-ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -43,7 +44,11 @@ jobs:
           cache: maven
       - name: Verify backend unit/integration and migrations
         working-directory: backend
-        run: mvn -B -ntp -T 1C -Pintegration verify
+        run: mvn -B -ntp -T 1 -Pintegration -Drag.reportDir="$RUNNER_TEMP/rag-retrieval" verify
+      - name: Verify real service recovery after process and broker failures
+        env:
+          ACCEPTANCE_TEMP_DIR: ${{ runner.temp }}/service-recovery
+        run: python3 scripts/service-recovery-check.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -72,6 +77,20 @@ jobs:
             --output "$RUNNER_TEMP/geek-ai-redteam.json"
           node -e 'const s=require(process.argv[1]).results.stats; if (!s.successes || s.failures || s.errors) process.exit(1)' \
             "$RUNNER_TEMP/geek-ai-redteam.json"
+      - name: Retain backend acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-acceptance-${{ github.sha }}
+          path: |
+            backend/**/target/surefire-reports/*.xml
+            backend/**/target/failsafe-reports/*.xml
+            ${{ runner.temp }}/geek-ai-redteam.json
+            ${{ runner.temp }}/geek-ai-redteam.log
+            ${{ runner.temp }}/service-recovery/*.log
+            ${{ runner.temp }}/service-recovery/*.json
+            ${{ runner.temp }}/rag-retrieval/**
+          retention-days: 14
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -108,6 +127,11 @@ jobs:
         run: |
           python3 -m pip install jsonschema==4.23.0
           python3 scripts/event-contract-check.py
+      - name: Verify recovery alerts
+        run: >-
+          docker run --rm --entrypoint /bin/promtool
+          --mount "type=bind,source=$GITHUB_WORKSPACE/observability/prometheus,target=/rules,readonly"
+          --workdir /rules prom/prometheus:v2.54.1 test rules recovery-alerts.test.yml
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -165,3 +189,45 @@ jobs:
         run: python3 scripts/test_trivy_regression_gate.py
       - name: Block new HIGH and CRITICAL dependency findings
         run: python3 scripts/trivy-regression-gate.py "$RUNNER_TEMP/trivy-base.json" "$RUNNER_TEMP/trivy-head.json" "$RUNNER_TEMP/trivy-base" "$GITHUB_WORKSPACE"
+      - name: Retain vulnerability comparison reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-findings-${{ github.sha }}
+          path: ${{ runner.temp }}/trivy-*.json
+          retention-days: 14
+  runtime-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build the AI runtime artifact
+        run: mvn -B -ntp -f backend/pom.xml -pl geek-ai -am -DskipTests package
+      - name: Build the release runtime image
+        run: |
+          mkdir -p "$RUNNER_TEMP/ai-runtime"
+          cp backend/geek-ai/target/geek-ai-0.1.0-SNAPSHOT.jar "$RUNNER_TEMP/ai-runtime/app.jar"
+          cp backend/Dockerfile.runtime "$RUNNER_TEMP/ai-runtime/Dockerfile"
+          docker build -t "geek-ai-acceptance:$GITHUB_SHA" "$RUNNER_TEMP/ai-runtime"
+      - name: Scan runtime operating system and bundled libraries
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.76.2
+          image-ref: geek-ai-acceptance:${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          format: json
+          output: ${{ runner.temp }}/runtime-trivy.json
+          exit-code: '0'
+      - name: Retain runtime findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-findings-${{ github.sha }}
+          path: ${{ runner.temp }}/runtime-trivy.json
+          retention-days: 14
