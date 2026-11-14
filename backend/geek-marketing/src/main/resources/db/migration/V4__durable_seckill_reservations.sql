@@ -25,7 +25,7 @@ SET expires_at=TIMESTAMPADD(SECOND,900,created_at)
 WHERE status='QUEUED' AND expires_at IS NULL;
 
 UPDATE marketing_seckill_order o
-JOIN marketing_event_outbox e ON e.aggregate_id=CAST(o.id AS CHAR)
+JOIN marketing_event_outbox e ON CAST(e.aggregate_id AS BINARY)=CAST(o.id AS BINARY)
 SET o.address_id=JSON_VALUE(e.payload_json,'$.payload.addressId' RETURNING SIGNED)
 WHERE e.aggregate_type='SECKILL_ORDER' AND e.event_type='marketing.seckill.order.v1'
   AND JSON_VALUE(e.payload_json,'$.payload.addressId' RETURNING SIGNED)>0;

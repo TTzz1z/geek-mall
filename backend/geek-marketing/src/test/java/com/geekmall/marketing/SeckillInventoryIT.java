@@ -7,6 +7,8 @@ import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -263,8 +265,10 @@ class SeckillInventoryIT {
         assertThat(reserved(SKU)).isZero();
     }
 
-    @Test
-    void migratesHistoricalReservationsAndReplaysLegacyRows() {
+    @ParameterizedTest
+    @ValueSource(strings = {"utf8mb4_0900_ai_ci", "utf8mb4_unicode_ci"})
+    void migratesHistoricalReservationsAndReplaysLegacyRows(String collation) {
+        jdbc.execute("ALTER DATABASE CHARACTER SET utf8mb4 COLLATE " + collation);
         var prior = flyway("3");
         prior.clean();
         prior.migrate();
@@ -278,6 +282,8 @@ class SeckillInventoryIT {
                        (45,10,11001,8,1,'legacy-timeout','TIMEOUT',CURRENT_TIMESTAMP)
                 """);
         events.append("SECKILL_ORDER", "41", MarketingRabbitConfiguration.SECKILL_ROUTING, Map.of("addressId", ADDRESS));
+        events.append("SECKILL_ORDER", "042", MarketingRabbitConfiguration.SECKILL_ROUTING, Map.of("addressId", ADDRESS + 1));
+        events.append("SECKILL_ORDER", "42 ", MarketingRabbitConfiguration.SECKILL_ROUTING, Map.of("addressId", ADDRESS + 1));
 
         var updated = flyway(null);
         updated.migrate();
@@ -287,6 +293,7 @@ class SeckillInventoryIT {
         assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(SECOND,created_at,expires_at) FROM marketing_seckill_order WHERE id=41", Integer.class)).isEqualTo(900);
         assertThat(order(USER, 2, "legacy-queued").id()).isEqualTo(41);
         assertCode(() -> internalOrder(SKU, USER, 2, ADDRESS + 1, "legacy-queued"), "MK40904");
+        assertThat(jdbc.queryForObject("SELECT address_id FROM marketing_seckill_order WHERE id=42", Long.class)).isNull();
         assertThat(internalOrder(SKU, 5, 3, ADDRESS, "legacy-created")).containsEntry("idempotentReplay", true);
         service.release(SESSION, SKU, 6, 2);
         assertThat(reserved(SKU)).isEqualTo(6);
